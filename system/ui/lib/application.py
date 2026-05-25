@@ -137,8 +137,10 @@ class MouseEvent(NamedTuple):
 
 
 class MouseState:
-  def __init__(self, scale: float = 1.0):
+  def __init__(self, scale: float = 1.0, scaled_height: int = 240):
     self._scale = scale
+    self._scaled_height = scaled_height  # For inverting Y coordinate when render texture is used
+    self._render_texture_active = False  # Track if render texture is being used
     self._events: deque[MouseEvent] = deque(maxlen=MOUSE_THREAD_RATE)  # bound event list
     self._prev_mouse_event: list[MouseEvent | None] = [None] * MAX_TOUCH_SLOTS
 
@@ -177,10 +179,12 @@ class MouseState:
     #  detect swipe-stop-lift via event gaps instead of the fragile decel heuristic.
     for slot in range(MAX_TOUCH_SLOTS):
       mouse_pos = rl.get_touch_position(slot)
-      # Note: raylib's set_mouse_scale() already handles coordinate transformation
-      # so we use mouse_pos directly without manual scaling
-      x = mouse_pos.x
-      y = mouse_pos.y
+      # Scale touch coordinates from physical window to logical UI coordinates
+      x = mouse_pos.x / self._scale if self._scale != 1.0 else mouse_pos.x
+      y = mouse_pos.y / self._scale if self._scale != 1.0 else mouse_pos.y
+      # When render texture is active with Y-flip, invert Y coordinate
+      if self._render_texture_active and self._scale != 1.0:
+        y = self._scaled_height - y
       ev = MouseEvent(
         MousePos(x, y),
         slot,
@@ -215,9 +219,9 @@ class GuiApplication:
       drm_res = self._get_drm_resolution()
       if drm_res is not None:
         dw, dh = drm_res
-        # Scale UI up to fill the display (e.g., 536x240 scaled to 720x1280)
-        # Cap scale between 0.3 and 2.5 to keep fonts reasonable
-        self._scale = max(0.3, min(2.5, min(dw / self._width, dh / self._height)))
+        # Scale UI up to fill the display entirely (e.g., 536x240 scaled to 720x1280 or 2160x1080)
+        # Allow scaling up to 4.5x to fill large displays (2160/536≈4.03, 1080/240=4.5)
+        self._scale = max(0.3, min(4.5, min(dw / self._width, dh / self._height)))
       else:
         self._scale = 1.0
 
@@ -243,7 +247,7 @@ class GuiApplication:
     self._nav_stack_ticks: list[Callable[[], None]] = []
     self._nav_stack_widgets_to_render = 1 if self.big_ui() else 2
 
-    self._mouse = MouseState(self._scale)
+    self._mouse = MouseState(self._scale, self._scaled_height)
     self._mouse_events: list[MouseEvent] = []
     self._last_mouse_event: MouseEvent = MouseEvent(MousePos(0, 0), 0, False, False, False, 0.0)
 
@@ -295,13 +299,14 @@ class GuiApplication:
       rl.init_window(self._scaled_width, self._scaled_height, title)
 
       needs_render_texture = self._scale != 1.0 or BURN_IN_MODE or RECORD or MICI_FORCE_RENDER_TEXTURE
-      if self._scale != 1.0:
-        rl.set_mouse_scale(1 / self._scale, 1 / self._scale)
       if needs_render_texture:
         if MICI_FORCE_RENDER_TEXTURE:
           cloudlog.warning("Forcing render texture path for mici UI")
         self._render_texture = rl.load_render_texture(self._scaled_width, self._scaled_height)
         rl.set_texture_filter(self._render_texture.texture, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
+        self._mouse._render_texture_active = True
+      else:
+        self._mouse._render_texture_active = False
 
       if RECORD:
         output_fps = fps * RECORD_SPEED
