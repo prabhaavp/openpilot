@@ -203,7 +203,7 @@ class GuiApplication:
     self._width = width if width is not None else GuiApplication._default_width()
     self._height = height if height is not None else GuiApplication._default_height()
 
-    if PC and os.getenv("SCALE") is None:
+    if os.getenv("SCALE") is None:
       self._scale = self._calculate_auto_scale()
     else:
       self._scale = SCALE
@@ -891,7 +891,7 @@ class GuiApplication:
 
   @staticmethod
   def big_ui() -> bool:
-    return HARDWARE.get_device_type() in ('tici', 'tizi') or BIG_UI
+    return False
 
 
 gui_app = GuiApplication()
