@@ -203,10 +203,22 @@ class GuiApplication:
     self._width = width if width is not None else GuiApplication._default_width()
     self._height = height if height is not None else GuiApplication._default_height()
 
-    if os.getenv("SCALE") is None:
+    if os.getenv("SCALE") is not None:
+      self._scale = SCALE
+    elif PC:
       self._scale = self._calculate_auto_scale()
     else:
-      self._scale = SCALE
+      # On non-PC platforms (e.g. C3x/DRM), raylib monitor queries don't work.
+      # Read the display resolution from DRM sysfs instead.
+      drm_res = self._get_drm_resolution()
+      if drm_res is not None:
+        dw, dh = drm_res
+        if dw >= self._width and dh >= self._height:
+          self._scale = 1.0
+        else:
+          self._scale = max(0.3, min(dw / self._width, dh / self._height))
+      else:
+        self._scale = 1.0
 
     # Scale, then ensure dimensions are even
     self._scaled_width = int(self._width * self._scale)
@@ -880,6 +892,21 @@ class GuiApplication:
 
     # Apply 0.95 factor for window decorations/taskbar margin
     return max(0.3, min(w / self._width, h / self._height) * 0.95)
+
+  def _get_drm_resolution(self) -> tuple[int, int] | None:
+    """Read display resolution from DRM sysfs (for platforms where raylib monitor queries don't work)."""
+    try:
+      for card_dir in Path("/sys/class/drm").iterdir():
+        mode_file = card_dir / "modes"
+        if mode_file.exists():
+          modes = mode_file.read_text().strip().split("\n")
+          if modes and modes[0]:
+            parts = modes[0].split("x")
+            if len(parts) == 2:
+              return int(parts[0]), int(parts[1])
+    except (OSError, ValueError):
+      pass
+    return None
 
   @staticmethod
   def _default_width() -> int:
