@@ -137,10 +137,8 @@ class MouseEvent(NamedTuple):
 
 
 class MouseState:
-  def __init__(self, scale: float = 1.0, scaled_height: int = 240):
+  def __init__(self, scale: float = 1.0):
     self._scale = scale
-    self._scaled_height = scaled_height  # For inverting Y coordinate when render texture is used
-    self._render_texture_active = False  # Track if render texture is being used
     self._events: deque[MouseEvent] = deque(maxlen=MOUSE_THREAD_RATE)  # bound event list
     self._prev_mouse_event: list[MouseEvent | None] = [None] * MAX_TOUCH_SLOTS
 
@@ -182,9 +180,6 @@ class MouseState:
       # Scale touch coordinates from physical window to logical UI coordinates
       x = mouse_pos.x / self._scale if self._scale != 1.0 else mouse_pos.x
       y = mouse_pos.y / self._scale if self._scale != 1.0 else mouse_pos.y
-      # When render texture is active with Y-flip, invert Y coordinate
-      if self._render_texture_active and self._scale != 1.0:
-        y = self._scaled_height - y
       ev = MouseEvent(
         MousePos(x, y),
         slot,
@@ -247,7 +242,7 @@ class GuiApplication:
     self._nav_stack_ticks: list[Callable[[], None]] = []
     self._nav_stack_widgets_to_render = 1 if self.big_ui() else 2
 
-    self._mouse = MouseState(self._scale, self._scaled_height)
+    self._mouse = MouseState(self._scale)
     self._mouse_events: list[MouseEvent] = []
     self._last_mouse_event: MouseEvent = MouseEvent(MousePos(0, 0), 0, False, False, False, 0.0)
 
@@ -304,9 +299,6 @@ class GuiApplication:
           cloudlog.warning("Forcing render texture path for mici UI")
         self._render_texture = rl.load_render_texture(self._scaled_width, self._scaled_height)
         rl.set_texture_filter(self._render_texture.texture, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
-        self._mouse._render_texture_active = True
-      else:
-        self._mouse._render_texture_active = False
 
       if RECORD:
         output_fps = fps * RECORD_SPEED
