@@ -85,12 +85,12 @@ void main() {
 }
 """
 
-DEFAULT_TEXT_SIZE = 60
+DEFAULT_TEXT_SIZE = 40 if not BIG_UI else 60
 DEFAULT_TEXT_COLOR = rl.Color(255, 255, 255, int(255 * 0.9))
 
 # Qt draws fonts accounting for ascent/descent differently, so compensate to match old styles
 # The real scales for the fonts below range from 1.212 to 1.266
-FONT_SCALE = 1.242 if BIG_UI else 1.16
+FONT_SCALE = 1.0 if not BIG_UI else 1.242  # Reduced from 1.16 to 1.0 for better scaling on larger displays
 
 ASSETS_DIR = files("openpilot.selfdrive").joinpath("assets")
 FONT_DIR = ASSETS_DIR.joinpath("fonts")
@@ -177,8 +177,10 @@ class MouseState:
     #  detect swipe-stop-lift via event gaps instead of the fragile decel heuristic.
     for slot in range(MAX_TOUCH_SLOTS):
       mouse_pos = rl.get_touch_position(slot)
-      x = mouse_pos.x / self._scale if self._scale != 1.0 else mouse_pos.x
-      y = mouse_pos.y / self._scale if self._scale != 1.0 else mouse_pos.y
+      # Note: raylib's set_mouse_scale() already handles coordinate transformation
+      # so we use mouse_pos directly without manual scaling
+      x = mouse_pos.x
+      y = mouse_pos.y
       ev = MouseEvent(
         MousePos(x, y),
         slot,
@@ -213,10 +215,9 @@ class GuiApplication:
       drm_res = self._get_drm_resolution()
       if drm_res is not None:
         dw, dh = drm_res
-        if dw >= self._width and dh >= self._height:
-          self._scale = 1.0
-        else:
-          self._scale = max(0.3, min(dw / self._width, dh / self._height))
+        # Scale UI up to fill the display (e.g., 536x240 scaled to 720x1280)
+        # Cap scale between 0.3 and 2.5 to keep fonts reasonable
+        self._scale = max(0.3, min(2.5, min(dw / self._width, dh / self._height)))
       else:
         self._scale = 1.0
 
