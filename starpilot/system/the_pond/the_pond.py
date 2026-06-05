@@ -77,6 +77,7 @@ from openpilot.starpilot.common.testing_grounds import (
   TESTING_GROUNDS_SLOT_DEFINITIONS as SHARED_TESTING_GROUNDS_SLOT_DEFINITIONS,
   TESTING_GROUNDS_STATE_PATH as SHARED_TESTING_GROUNDS_STATE_PATH,
 )
+from openpilot.starpilot.common.starpilot_param_validation import sanitize_toggle_payload, scan_invalid_toggles, remove_invalid_toggles
 from openpilot.starpilot.navigation.destination_store import normalize_destination_payload, update_recent_destinations
 from openpilot.starpilot.system.the_pond.factory_reset import remove_path as _run_factory_reset_delete
 from openpilot.starpilot.system.the_pond import utilities
@@ -6262,16 +6263,41 @@ def setup(app):
     if not request_data or "data" not in request_data:
       return jsonify({"success": False, "message": "Missing 'data' in request."}), 400
 
-    allowed_keys = {key for key, _, _, _ in starpilot_default_params if key not in EXCLUDED_KEYS}
-
     toggle_values = utilities.decode_parameters(request_data["data"])
-    for key, value in toggle_values.items():
-      mapped_key = LEGACY_STARPILOT_PARAM_RENAMES.get(key, key)
-      if mapped_key in allowed_keys:
-        params.put(mapped_key, value)
+    sanitized, invalid_keys = sanitize_toggle_payload(toggle_values)
+
+    for key, value in sanitized.items():
+      params.put(key, value)
 
     update_starpilot_toggles()
+
+    if invalid_keys:
+      return jsonify({
+        "success": True,
+        "message": f"Restored {len(sanitized)} toggles. {len(invalid_keys)} params are no longer valid.",
+        "invalid_keys": invalid_keys,
+      })
     return jsonify({"success": True, "message": "Toggles restored!"})
+
+  @app.route("/api/toggles/scan", methods=["GET"])
+  def scan_invalid_toggles_endpoint():
+    invalid = scan_invalid_toggles()
+    return jsonify({
+      "invalid_keys": invalid.get("invalid", []),
+      "deprecated_keys": invalid.get("deprecated", []),
+      "total_invalid": len(invalid.get("invalid", [])),
+      "total_deprecated": len(invalid.get("deprecated", [])),
+    })
+
+  @app.route("/api/toggles/cleanup", methods=["POST"])
+  def cleanup_invalid_toggles():
+    removed_count, removed_keys = remove_invalid_toggles()
+    update_starpilot_toggles()
+    return jsonify({
+      "success": True,
+      "message": f"Cleaned up {removed_count} invalid/deprecated toggles.",
+      "removed_keys": removed_keys,
+    })
 
   @app.route("/api/toggles/reset_default", methods=["POST"])
   def reset_toggle_values():

@@ -9,7 +9,8 @@ from openpilot.common.realtime import Ratekeeper
 from openpilot.common.time_helpers import system_time_valid
 
 from openpilot.starpilot.common.starpilot_utilities import get_starpilot_api_info, is_url_pingable
-from openpilot.starpilot.common.starpilot_variables import EXCLUDED_KEYS, STARPILOT_API, update_starpilot_toggles
+from openpilot.starpilot.common.starpilot_param_validation import sanitize_toggle_payload
+from openpilot.starpilot.common.starpilot_variables import STARPILOT_API, update_starpilot_toggles
 
 POND_PRESENCE_INTERVAL_ACTIVE = 60
 POND_PRESENCE_INTERVAL_IDLE = 240
@@ -56,15 +57,9 @@ def check_toggles(started, params, sm=None, boot_run=False):
     if not toggles:
       return pond_active
 
-    for key, value in toggles.items():
-      if key in EXCLUDED_KEYS:
-        continue
-      try:
-        params.check_key(key)
-      except Exception:
-        print(f"Skipping unknown param key: {key}")
-        continue
+    sanitized_toggles, invalid_keys = sanitize_toggle_payload(toggles)
 
+    for key, value in sanitized_toggles.items():
       if value is None:
         continue
 
@@ -72,8 +67,7 @@ def check_toggles(started, params, sm=None, boot_run=False):
         casted_value = params.cpp2python(key, value.encode("utf-8") if isinstance(value, str) else value)
         if casted_value is not None:
           params.put(key, casted_value)
-      except Exception as exception:
-        print(f"Skipping remote toggle {key}: {exception}")
+      except Exception:
         continue
 
     update_starpilot_toggles()
@@ -89,7 +83,10 @@ def check_toggles(started, params, sm=None, boot_run=False):
       timeout=10,
     ).raise_for_status()
 
-    print(f"Successfully applied {len(toggles)} remote toggles")
+    if invalid_keys:
+      print(f"Applied {len(sanitized_toggles)} toggles ({len(invalid_keys)} skipped as invalid/deprecated)")
+    else:
+      print(f"Successfully applied {len(sanitized_toggles)} remote toggles")
     return pond_active
 
   except Exception as e:

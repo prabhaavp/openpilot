@@ -8,9 +8,11 @@ const state = reactive({
   showResetDefaultModal: false,
   showResetStockModal: false,
   showSaveMeModal: false,
+  showScanModal: false,
+  scanResult: null,
   factoryResetBusy: false,
   factoryResetStatus: null,
-})
+ })
 
 let initialized = false
 let fileInput = null
@@ -110,7 +112,16 @@ async function restoreToggles(event) {
     })
 
     const result = await response.json()
-    showSnackbar(result.message || "Toggles restored!")
+
+    if (result.invalid_keys && result.invalid_keys.length > 0) {
+      state.scanResult = {
+        invalid_keys: result.invalid_keys,
+        total: result.invalid_keys.length,
+      }
+      showSnackbar(`Restored. ${result.invalid_keys.length} params are no longer valid. Click "View Invalid Toggles" to see them.`)
+    } else {
+      showSnackbar(result.message || "Toggles restored!")
+    }
 
     event.target.value = ""
   }
@@ -180,6 +191,39 @@ export function ToggleControl() {
     fileInput.click()
   }
 
+  async function scanInvalidToggles() {
+    try {
+      const response = await fetch("/api/toggles/scan", { method: "GET" })
+      const result = await response.json()
+      const invalidKeys = result.invalid_keys || []
+      const deprecatedKeys = result.deprecated_keys || []
+      state.scanResult = {
+        invalid_keys: invalidKeys,
+        deprecated_keys: deprecatedKeys,
+        total: invalidKeys.length + deprecatedKeys.length,
+      }
+      if (state.scanResult.total > 0) {
+        state.showScanModal = true
+      } else {
+        showSnackbar("No invalid or deprecated toggles found.")
+      }
+    } catch (error) {
+      showSnackbar("Failed to scan toggles: " + error.message, "error")
+    }
+  }
+
+  async function cleanupInvalidToggles() {
+    state.showScanModal = false
+    try {
+      const response = await fetch("/api/toggles/cleanup", { method: "POST" })
+      const result = await response.json()
+      showSnackbar(result.message || "Cleanup complete.")
+      state.scanResult = null
+    } catch (error) {
+      showSnackbar("Failed to cleanup toggles: " + error.message, "error")
+    }
+  }
+
   function confirmSaveMe() {
     state.showSaveMeModal = true;
   }
@@ -222,10 +266,24 @@ export function ToggleControl() {
       <section class="toggle-control-widget">
         <div class="toggle-control-title">Backup/Restore Toggles</div>
         <p class="toggle-control-text">
-          Use the buttons below to backup or restore your toggles.
+          Use the buttons below to backup or restore your toggles. Invalid keys will be
+          filtered out during restore.
         </p>
         <button class="toggle-control-button" @click="${backupToggles}">Backup Toggles</button>
         <button class="toggle-control-button" @click="${triggerRestorePrompt}">Restore Toggles</button>
+        ${() => state.scanResult && state.scanResult.total > 0 ? html`
+          <button class="toggle-control-button" @click="${() => { state.showScanModal = true }}" style="margin-left: 0.5rem; background: #ff9800;">
+            View Invalid Toggles (${state.scanResult.total})
+          </button>
+        ` : ""}
+      </section>
+
+      <section class="toggle-control-widget" style="margin-left: 1.5rem">
+        <div class="toggle-control-title">Invalid Toggle Management</div>
+        <p class="toggle-control-text">
+          Detect and clean up invalid or deprecated toggle parameters.
+        </p>
+        <button class="toggle-control-button" @click="${scanInvalidToggles}">Scan for Invalid Toggles</button>
       </section>
 
       <section class="toggle-control-widget" style="margin-left: 1.5rem">
@@ -291,6 +349,33 @@ export function ToggleControl() {
     onConfirm: runFactoryReset,
     onCancel: () => { state.showSaveMeModal = false; },
     confirmText: "Factory Reset"
+  }) : ""}
+    ${() => state.showScanModal && state.scanResult ? Modal({
+    title: "Invalid Toggles Found",
+    message: html`
+      <div>
+        <p>${state.scanResult.total} invalid or deprecated toggle${state.scanResult.total !== 1 ? "s" : ""} detected:</p>
+        <div style="max-height: 200px; overflow-y: auto; margin: 0.5rem 0;">
+          ${state.scanResult.invalid_keys && state.scanResult.invalid_keys.length > 0 ? html`
+            <strong>Invalid Keys:</strong>
+            <ul style="margin: 0.25rem 0;">
+              ${state.scanResult.invalid_keys.slice(0, 15).map(key => html`<li style="font-size: 0.9em; padding: 0.1rem 0;">• ${key}</li>`)}
+              ${state.scanResult.invalid_keys.length > 15 ? html`<li style="font-size: 0.9em; padding: 0.1rem 0;">... and ${state.scanResult.invalid_keys.length - 15} more</li>` : ""}
+            </ul>
+          ` : ""}
+          ${state.scanResult.deprecated_keys && state.scanResult.deprecated_keys.length > 0 ? html`
+            <strong>Deprecated Keys:</strong>
+            <ul style="margin: 0.25rem 0;">
+              ${state.scanResult.deprecated_keys.slice(0, 15).map(key => html`<li style="font-size: 0.9em; padding: 0.1rem 0;">• ${key}</li>`)}
+              ${state.scanResult.deprecated_keys.length > 15 ? html`<li style="font-size: 0.9em; padding: 0.1rem 0;">... and ${state.scanResult.deprecated_keys.length - 15} more</li>` : ""}
+            </ul>
+          ` : ""}
+        </div>
+      </div>
+    `,
+    onConfirm: cleanupInvalidToggles,
+    onCancel: () => { state.showScanModal = false; },
+    confirmText: "Clean Up Now"
   }) : ""}
   `
 }

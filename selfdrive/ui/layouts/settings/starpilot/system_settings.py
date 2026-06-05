@@ -53,29 +53,9 @@ from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import (
   _point_hits,
   _draw_text_fit_common,
 )
+from openpilot.starpilot.common.starpilot_param_validation import sanitize_toggle_payload
+from openpilot.starpilot.common.starpilot_variables import update_starpilot_toggles, EXCLUDED_KEYS, LEGACY_STARPILOT_PARAM_RENAMES
 from openpilot.starpilot.common.connect_server import prepare_konik_server_switch
-
-LEGACY_STARPILOT_PARAM_RENAMES = {
-  "FrogPilotApiToken": "StarPilotApiToken",
-  "FrogPilotCarParams": "StarPilotCarParams",
-  "FrogPilotCarParamsPersistent": "StarPilotCarParamsPersistent",
-  "FrogPilotDongleId": "StarPilotDongleId",
-  "FrogPilotStats": "StarPilotStats",
-}
-
-EXCLUDED_KEYS = {
-  "AvailableModels",
-  "AvailableModelNames",
-  "StarPilotStats",
-  "GithubSshKeys",
-  "GithubUsername",
-  "MapBoxRequests",
-  "ModelDrivesAndScores",
-  "OverpassRequests",
-  "SpeedLimits",
-  "SpeedLimitsFiltered",
-  "UpdaterAvailableBranches",
-}
 
 REPORT_CATEGORIES = [
   tr_noop("Acceleration feels harsh or jerky"),
@@ -653,6 +633,7 @@ class AetherBackupsCareDialog(Widget):
       {"id": "clear_logs", "text": tr("Clear Error Logs"), "danger": True},
       {"id": "reset_toggles", "text": tr("Reset Toggles"), "danger": True},
       {"id": "reset_stock", "text": tr("Reset To Stock"), "danger": True},
+      {"id": "view_invalid_toggles", "text": tr("View Invalid Toggles"), "danger": False},
     ]
 
     self._button_rects: dict[str, rl.Rectangle] = {}
@@ -705,6 +686,8 @@ class AetherBackupsCareDialog(Widget):
       self._controller.handle_action("ResetDefaults")
     elif btn_id == "reset_stock":
       self._controller.handle_action("ResetStock")
+    elif btn_id == "view_invalid_toggles":
+      self._controller.handle_action("ViewInvalidToggles")
 
   def _render(self, rect: rl.Rectangle):
     rl.draw_rectangle(0, 0, gui_app.width, gui_app.height, rl.Color(0, 0, 0, 160))
@@ -965,6 +948,8 @@ class StarPilotSystemLayout(_SettingsPage):
       self._on_reset_defaults()
     elif action_id == "ResetStock":
       self._on_reset_stock()
+    elif action_id == "ViewInvalidToggles":
+      self._on_view_invalid_toggles()
 
   def _set_brightness(self, key, val):
     self._params.put_int(key, int(val))
@@ -1170,17 +1155,43 @@ class StarPilotSystemLayout(_SettingsPage):
           if r2 == DialogResult.CONFIRM:
             src = Path(f"/data/toggle_backups/{dialog.selection}")
             params_dir = Path("/data/params/d")
-            for old_key, new_key in LEGACY_STARPILOT_PARAM_RENAMES.items():
-              if (src / old_key).exists():
-                (params_dir / new_key).unlink(missing_ok=True)
-            shutil.copytree(str(src), "/data/params/d", dirs_exist_ok=True)
+
+            restored_toggles = {}
+            invalid_keys = []
+            for param_file in src.iterdir():
+              if not param_file.is_file():
+                continue
+              key = param_file.name
+              try:
+                value = param_file.read_text(encoding='utf-8')
+                restored_toggles[key] = value
+              except Exception:
+                invalid_keys.append(key)
+
+            sanitized, found_invalid = sanitize_toggle_payload(restored_toggles)
+            invalid_keys.extend(found_invalid)
+
+            # Deduplicate while preserving order
+            seen = set()
+            invalid_keys = [k for k in invalid_keys if not (k in seen or seen.add(k))]
+
+            for key, value in sanitized.items():
+              (params_dir / key).write_text(str(value), encoding='utf-8')
+
             for old_key, new_key in LEGACY_STARPILOT_PARAM_RENAMES.items():
               old_path = params_dir / old_key
               new_path = params_dir / new_key
               if old_path.exists():
                 old_path.replace(new_path)
-            gui_app.push_widget(alert_dialog(tr("Toggles restored.")))
-        gui_app.push_widget(ConfirmDialog(tr("This will overwrite your current toggles."), tr("Restore"), callback=on_confirm))
+
+            update_starpilot_toggles()
+
+            if invalid_keys:
+              self._params_memory.put("InvalidTogglesCache", json.dumps(invalid_keys))
+              gui_app.push_widget(alert_dialog(tr("Toggles restored. {} invalid/deprecated entries were skipped.").format(len(invalid_keys))))
+            else:
+              gui_app.push_widget(alert_dialog(tr("Toggles restored successfully.")))
+        gui_app.push_widget(ConfirmDialog(tr("This will overwrite your current toggles and remove invalid/deprecated entries."), tr("Restore"), callback=on_confirm))
 
     dialog = MultiOptionDialog(tr("Select Toggle Backup"), backups, callback=_on_select)
     gui_app.push_widget(dialog)
@@ -1263,3 +1274,25 @@ class StarPilotSystemLayout(_SettingsPage):
             self._params.put(k, stock)
         gui_app.push_widget(alert_dialog(tr("Toggles reset to stock openpilot.")))
     gui_app.push_widget(ConfirmDialog(tr("Reset all toggles to stock openpilot?"), tr("Reset"), callback=_do_reset))
+
+  def _on_view_invalid_toggles(self):
+    cached = self._params_memory.get("InvalidTogglesCache", encoding='utf-8')
+    if not cached:
+      gui_app.push_widget(alert_dialog(tr("No invalid toggles found.")))
+      return
+    try:
+      invalid_keys = json.loads(cached)
+    except json.JSONDecodeError:
+      gui_app.push_widget(alert_dialog(tr("Error reading invalid toggles cache.")))
+      return
+    if not invalid_keys:
+      gui_app.push_widget(alert_dialog(tr("No invalid toggles found.")))
+      return
+
+    # Clear cache after viewing so stale entries aren't shown repeatedly
+    self._params_memory.remove("InvalidTogglesCache")
+
+    keys_text = "\n".join(invalid_keys[:20])
+    if len(invalid_keys) > 20:
+      keys_text += f"\n... and {len(invalid_keys) - 20} more"
+    gui_app.push_widget(alert_dialog(tr("Invalid/Deprecated Toggles:\n{}").format(keys_text)))
