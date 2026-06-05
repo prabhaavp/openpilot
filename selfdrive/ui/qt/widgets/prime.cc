@@ -232,9 +232,10 @@ SetupWidget::SetupWidget(QWidget* parent) : QFrame(parent) {
   content_layout->setContentsMargins(0, 0, 0, 0);
   content_layout->setSpacing(30);
 
-  QLabel *logo = new QLabel;
-  QPixmap logo_pix("../assets/images/StarPilotLogo.png");
-  logo->setPixmap(logo_pix.scaled(750, 770, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+QLabel *logo = new QLabel;
+  QPixmap logo_pix(750, 770);
+  logo_pix.fill(Qt::black);
+  logo->setPixmap(logo_pix);
   logo->setAlignment(Qt::AlignCenter);
   content_layout->addWidget(logo, 0, Qt::AlignCenter);
   content_layout->addStretch();

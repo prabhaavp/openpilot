@@ -462,7 +462,7 @@ class GuiApplication:
   def set_should_render(self, should_render: bool):
     self._should_render = should_render
 
-  def texture(self, asset_path: str, width: int | None = None, height: int | None = None,
+  def texture(self, asset_path: str | None, width: int | None = None, height: int | None = None,
               alpha_premultiply=False, keep_aspect_ratio=True, flip_x: bool = False) -> rl.Texture:
     if width is not None:
       width = round(width)
@@ -473,9 +473,12 @@ class GuiApplication:
     if cache_key in self._textures:
       return self._textures[cache_key]
 
-    with as_file(ASSETS_DIR.joinpath(asset_path)) as fspath:
-      image_obj = self._load_image_from_path(fspath.as_posix(), width, height, alpha_premultiply, keep_aspect_ratio, flip_x)
-      texture_obj = self._load_texture_from_image(image_obj)
+    if asset_path is None:
+      image_obj = rl.gen_image_color(width, height, rl.Color(0, 0, 0, 255))
+    else:
+      with as_file(ASSETS_DIR.joinpath(asset_path)) as fspath:
+        image_obj = self._load_image_from_path(fspath.as_posix(), width, height, alpha_premultiply, keep_aspect_ratio, flip_x)
+    texture_obj = self._load_texture_from_image(image_obj)
 
     # Set logical size so widget layout math stays at 1x coordinates
     if self._scale != 1.0 and width is not None and height is not None:
