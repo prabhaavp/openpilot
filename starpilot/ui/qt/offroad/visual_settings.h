@@ -25,7 +25,7 @@ private:
 
   QSet<QString> advancedCustomOnroadUIKeys = {"HideAlerts", "HideChangingLanesBanner", "HideDistanceProfileBanner", "HideDMIcon", "HideLeadMarker", "HideMaxSpeed", "HideSpeed", "HideSpeedLimit", "HideSteeringWheel", "HideTurningBanner", "WheelSpeed"};
   QSet<QString> customOnroadUIKeys = {"AccelerationPath", "AdjacentPath", "BlindSpotPath", "Compass", "OnroadDistanceButton", "PedalsOnUI", "RotatingWheel"};
-  QSet<QString> modelUIKeys = {"DynamicPathWidth", "LaneLinesWidth", "PathEdgeWidth", "PathWidth", "RoadEdgesWidth"};
+  QSet<QString> modelUIKeys = {"DynamicPathWidth", "LaneLinesWidth", "LeadSmoothingFactor", "MinPathSpeed", "PathEdgeWidth", "PathSmoothingFactor", "PathWidth", "RoadEdgesWidth"};
   QSet<QString> navigationUIKeys = {"RoadNameUI", "ShowSpeedLimits", "SLCMapboxFiller", "UseVienna"};
   QSet<QString> qualityOfLifeKeys = {"CameraView", "DriverCamera", "StoppedTimer", "StockConfidenceBallWidget"};
 

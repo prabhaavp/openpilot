@@ -278,6 +278,21 @@ class StarPilotAppearanceLayout(_SettingsPage):
                        set_state=lambda s: self._params.put_bool("BlindSpotPath", s),
                        enabled=bsm,
                        visible=model_on),
+            SettingRow("PathSmoothingFactor", "value", tr_noop("Path Smoothing"),
+                       subtitle="",
+                       get_value=lambda: f"{self._params.get_int('PathSmoothingFactor')}%",
+                       on_click=lambda: self._show_int_selector("PathSmoothingFactor", 0, 100, "%"),
+                       visible=model_on),
+            SettingRow("MinPathSpeed", "value", tr_noop("Min Path Speed"),
+                       subtitle="",
+                       get_value=lambda: f"{self._params.get_int('MinPathSpeed')} mph",
+                       on_click=lambda: self._show_int_selector("MinPathSpeed", 0, 99, " mph"),
+                       visible=model_on),
+            SettingRow("LeadSmoothingFactor", "value", tr_noop("Lead Marker Smoothing"),
+                       subtitle="",
+                       get_value=lambda: f"{self._params.get_int('LeadSmoothingFactor')}%",
+                       on_click=lambda: self._show_int_selector("LeadSmoothingFactor", 0, 100, "%"),
+                       visible=model_on),
         ]
 
         # ═══ 2. Driving Widgets & HUD ═══

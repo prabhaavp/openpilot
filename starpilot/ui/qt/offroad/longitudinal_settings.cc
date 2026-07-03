@@ -111,6 +111,8 @@ StarPilotLongitudinalPanel::StarPilotLongitudinalPanel(StarPilotSettingsWindow *
     {"CalibratedLateralAcceleration", tr("Calibrated Lateral Acceleration"), tr("<b>The learned lateral acceleration from collected driving data.</b> This sets how fast openpilot will take curves. Higher values allow faster cornering; lower values slow the vehicle for gentler turns."), ""},
     {"CalibrationProgress", tr("Calibration Progress"), tr("<b>How much curve data has been collected.</b> This is a progress meter; it is normal for the value to stay low and rarely reach 100%."), ""},
     {"ResetCurveData", tr("Reset Curve Data"), tr("<b>Reset collected user data for \"Curve Speed Controller\".</b>"), ""},
+    {"UseManualCurveSpeed", tr("Manual Curve Speed"), tr("<b>Override the learned curve speed with a fixed manual lateral acceleration limit.</b>"), ""},
+    {"ManualCurveSpeed", tr("Manual Lateral Accel Limit"), tr("<b>The fixed lateral acceleration value to use for curve speed control when manual mode is enabled.</b>"), ""},
     {"ShowCSCStatus", tr("Status Widget"), tr("<b>Show the \"Curve Speed Controller\" target speed on the driving screen.</b>"), ""},
 
     {"CustomPersonalities", tr("Driving Personalities"), tr("<b>Customize the \"Driving Personalities\"</b> to better match your driving style."), "../../starpilot/assets/toggle_icons/icon_personality.png"},
@@ -328,6 +330,9 @@ StarPilotLongitudinalPanel::StarPilotLongitudinalPanel(StarPilotSettingsWindow *
         }
       });
       longitudinalToggle = resetCurveDataButton;
+
+    } else if (param == "ManualCurveSpeed") {
+      longitudinalToggle = new StarPilotParamValueControl(param, title, desc, icon, 0.5, 5.0, tr(" m/s²"), std::map<float, QString>(), 0.1);
 
     } else if (param == "CustomPersonalities") {
       StarPilotManageControl *customPersonalitiesToggle = new StarPilotManageControl(param, title, desc, icon);

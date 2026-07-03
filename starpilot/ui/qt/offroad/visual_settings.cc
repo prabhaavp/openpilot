@@ -56,7 +56,10 @@ StarPilotVisualsPanel::StarPilotVisualsPanel(StarPilotSettingsWindow *parent, bo
     {"ModelUI", tr("Model UI"), tr("<b>Model visualizations</b> for the driving path, lane lines, path edges, and road edges."), "../../starpilot/assets/toggle_icons/icon_road.png"},
     {"DynamicPathWidth", tr("Dynamic Path Width"), tr("<b>Change the path width based on engagement.</b><br><br><b>Fully Engaged</b>: 100%<br><b>Always On Lateral</b>: 75%<br><b>Disengaged</b>: 50%"), ""},
     {"LaneLinesWidth", tr("Lane Lines Width"), tr("<b>Set the lane-line thickness.</b><br><br>Default matches the MUTCD lane-line width standard of 4 inches."), ""},
+    {"LeadSmoothingFactor", tr("Lead Marker Smoothing"), tr("<b>Smooth the lead marker transparency</b> to reduce flickering. Higher values produce smoother transitions."), ""},
+    {"MinPathSpeed", tr("Min Path Speed"), tr("<b>Hide the driving path and lane lines below the set speed.</b> Set to 0 to always show."), ""},
     {"PathEdgeWidth", tr("Path Edges Width"), tr("<b>Set the driving-path edge width</b> that represents different driving modes and statuses.<br><br>Default is 20% of the total path width.<br><br>Color Guide:<br><br>- <b>Light Blue</b>: Always On Lateral<br>- <b>Green</b>: Default<br>- <b>Orange</b>: Experimental Mode<br>- <b>Red</b>: Traffic Mode<br>- <b>Yellow</b>: Conditional Experimental Mode overridden"), ""},
+    {"PathSmoothingFactor", tr("Path Smoothing"), tr("<b>Reduce path and lane-line jitter</b> by applying temporal smoothing. Higher values produce a smoother but more delayed path."), ""},
     {"PathWidth", tr("Path Width"), tr("<b>Set the driving-path width.</b><br><br>Default (6.1 feet) matches the width of a 2019 Lexus ES 350."), ""},
     {"RoadEdgesWidth", tr("Road Edges Width"), tr("<b>Set the road-edge thickness.</b><br><br>Default matches half of the MUTCD lane-line width standard of 4 inches."), ""},
 
@@ -113,6 +116,10 @@ StarPilotVisualsPanel::StarPilotVisualsPanel(StarPilotSettingsWindow *parent, bo
       visualToggle = modelUIToggle;
     } else if (param == "LaneLinesWidth" || param == "RoadEdgesWidth") {
       visualToggle = new StarPilotParamValueControl(param, title, desc, icon, 0, 24, tr(" inches"));
+    } else if (param == "PathSmoothingFactor" || param == "LeadSmoothingFactor") {
+      visualToggle = new StarPilotParamValueControl(param, title, desc, icon, 0, 100, tr("%"), std::map<float, QString>(), 1);
+    } else if (param == "MinPathSpeed") {
+      visualToggle = new StarPilotParamValueControl(param, title, desc, icon, 0, 99, tr(" mph"), std::map<float, QString>(), 1, true);
     } else if (param == "PathEdgeWidth") {
       std::map<float, QString> pathEdgeLabels;
       for (int i = 0; i <= 100; ++i) {

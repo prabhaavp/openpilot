@@ -617,6 +617,26 @@
         "parent_key": "CurveSpeedController"
       },
       {
+        "key": "UseManualCurveSpeed",
+        "label": "Manual Curve Speed",
+        "description": "Override the learned curve speed with a fixed manual lateral acceleration limit.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "CurveSpeedController"
+      },
+      {
+        "key": "ManualCurveSpeed",
+        "label": "Manual Lateral Accel Limit",
+        "description": "The fixed lateral acceleration value (m/s²) to use for curve speed control when manual mode is enabled.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.5,
+        "max": 5.0,
+        "step": 0.1,
+        "precision": 1,
+        "parent_key": "CurveSpeedController"
+      },
+      {
         "key": "CustomPersonalities",
         "label": "Driving Personalities",
         "description": "Customize the \"Driving Personalities\" to better match your driving style.",
@@ -2006,6 +2026,39 @@
         "ui_type": "numeric",
         "min": 0.0,
         "max": 24.0,
+        "parent_key": "ModelUI"
+      },
+      {
+        "key": "PathSmoothingFactor",
+        "label": "Path Smoothing",
+        "description": "Reduce path and lane-line jitter by applying temporal smoothing. Higher values produce a smoother but more delayed path.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 100.0,
+        "step": 1.0,
+        "parent_key": "ModelUI"
+      },
+      {
+        "key": "MinPathSpeed",
+        "label": "Min Path Speed",
+        "description": "Hide the driving path and lane lines below the set speed (mph). Set to 0 to always show.",
+        "data_type": "int",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 99.0,
+        "step": 1.0,
+        "parent_key": "ModelUI"
+      },
+      {
+        "key": "LeadSmoothingFactor",
+        "label": "Lead Marker Smoothing",
+        "description": "Smooth the lead marker transparency to reduce flickering. Higher values produce smoother transitions.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 100.0,
+        "step": 1.0,
         "parent_key": "ModelUI"
       },
       {
@@ -3486,6 +3539,14 @@
         "key": "UseKonikServer",
         "label": "Use Konik Server",
         "description": "Upload driving data to \"stable.konik.ai\" instead of \"connect.comma.ai\".",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "DeviceManagement"
+      },
+      {
+        "key": "UseRaylibUI",
+        "label": "Use Python UI (Raylib)",
+        "description": "Use the Python Raylib-based UI instead of the legacy C++ QT UI. Requires a reboot to take effect.",
         "data_type": "bool",
         "ui_type": "toggle",
         "parent_key": "DeviceManagement"

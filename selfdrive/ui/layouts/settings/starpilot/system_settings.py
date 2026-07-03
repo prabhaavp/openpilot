@@ -256,6 +256,13 @@ class SystemSettingsManagerView(PanelManagerView):
         "set_state": self._controller._on_konik_toggle,
       },
       {
+        "id": "UseRaylibUI",
+        "title": tr("Use Python UI (Raylib)"),
+        "subtitle": tr("Use the Python Raylib-based UI instead of the legacy C++ QT UI. Requires a reboot."),
+        "get_state": lambda: self._controller._params.get_bool("UseRaylibUI"),
+        "set_state": lambda v: self._controller._params.put_bool("UseRaylibUI", v),
+      },
+      {
         "title": tr("Debug Mode"),
         "subtitle": tr("Expose additional debugging and developer toggles."),
         "get_state": lambda: self._controller._params.get_bool("DebugMode"),
