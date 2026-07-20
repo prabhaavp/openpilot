@@ -135,7 +135,9 @@ class CurveSpeedController:
 
   def update_target(self, v_ego):
     lateral_acceleration = self.lateral_acceleration
-    if self.starpilot_planner.starpilot_weather.weather_id != 0:
+    if self.starpilot_planner.params.get_bool("UseManualCurveSpeed"):
+      lateral_acceleration = self.starpilot_planner.params.get_float("ManualCurveSpeed", default=2.0)
+    elif self.starpilot_planner.starpilot_weather.weather_id != 0:
       lateral_acceleration -= self.lateral_acceleration * self.starpilot_planner.starpilot_weather.reduce_lateral_acceleration
 
     if self.target_set:

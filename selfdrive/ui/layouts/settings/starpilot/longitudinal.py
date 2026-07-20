@@ -660,6 +660,7 @@ class StarPilotLongitudinalLayout(_SettingsPage):
       ))
 
     # ── 4. Adaptive Speed Controls Rows (CES + CSC + CCM) ──
+    manual_csc_on = lambda: csc_on() and self._params.get_bool("UseManualCurveSpeed")
     self._curve_speed_controller_rows = [
       SettingRow("CalibratedLatAccel", "value", tr_noop("Calibrated Lateral Accel"),
                  subtitle=tr_noop("The learned lateral acceleration from collected driving data. Higher values allow faster cornering."),
@@ -677,6 +678,16 @@ class StarPilotLongitudinalLayout(_SettingsPage):
                  action_danger=True,
                  on_click=self._reset_curve_data,
                  visible=csc_on),
+      SettingRow("UseManualCurveSpeed", "toggle", tr_noop("Manual Curve Speed"),
+                 subtitle=tr_noop("Override the learned curve speed with a fixed manual lateral acceleration limit."),
+                 get_state=lambda: self._params.get_bool("UseManualCurveSpeed"),
+                 set_state=lambda s: self._params.put_bool("UseManualCurveSpeed", s),
+                 visible=csc_on),
+      SettingRow("ManualCurveSpeed", "value", tr_noop("Manual Lateral Accel Limit"),
+                 subtitle=tr_noop("Fixed lateral acceleration for curve speed control."),
+                 get_value=lambda: f"{self._params.get_float('ManualCurveSpeed'):.1f} m/s²",
+                 on_click=lambda: self._show_slider("ManualCurveSpeed", 0.5, 5.0, 0.1, " m/s²", value_type="float"),
+                 visible=manual_csc_on),
     ]
 
     # ── 5. Driving Personalities Rows ──

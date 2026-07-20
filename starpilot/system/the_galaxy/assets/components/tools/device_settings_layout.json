@@ -701,6 +701,28 @@
         "settings_tier": "simple"
       },
       {
+        "key": "UseManualCurveSpeed",
+        "label": "Manual Curve Speed",
+        "description": "Override the learned curve speed with a fixed manual lateral acceleration limit.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "CurveSpeedController",
+        "settings_tier": "simple"
+      },
+      {
+        "key": "ManualCurveSpeed",
+        "label": "Manual Lateral Accel Limit",
+        "description": "The fixed lateral acceleration value (m/s²) to use for curve speed control when manual mode is enabled.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.5,
+        "max": 5.0,
+        "step": 0.1,
+        "precision": 1,
+        "parent_key": "CurveSpeedController",
+        "settings_tier": "simple"
+      },
+      {
         "key": "CustomPersonalities",
         "label": "Driving Personalities",
         "description": "Customize the \"Driving Personalities\" to better match your driving style.",
