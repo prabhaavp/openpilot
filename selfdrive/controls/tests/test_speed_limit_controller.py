@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from openpilot.common.constants import CV
+from openpilot.common.realtime import DT_MDL
 from openpilot.starpilot.controls.lib.speed_limit_controller import SpeedLimitController
 
 
@@ -253,5 +254,93 @@ def test_unconfirmed_lower_limit_keeps_existing_override():
     assert controller.unconfirmed_speed_limit == pytest.approx(mph(45))
     assert controller.overridden_speed == pytest.approx(mph(65))
     assert controller.override_slc
+  finally:
+    controller.shutdown()
+
+
+def test_higher_limit_does_not_clear_override():
+  controller = make_controller()
+  try:
+    controller.source = "Dashboard"
+    controller.target = mph(35)
+    controller.previous_source = "Dashboard"
+    controller.previous_target = mph(35)
+    controller.overridden_speed = mph(55)
+    controller.override_slc = True
+
+    sm = make_sm(gas_pressed=True)
+    controller.update_limits(mph(45), datetime.now(timezone.utc), False, mph(75), mph(55), sm)
+    controller.update_override(mph(75), 0.0, mph(55), 0.0, sm)
+
+    assert controller.target == pytest.approx(mph(45))
+    assert controller.source == "Dashboard"
+    assert controller.overridden_speed == pytest.approx(mph(55))
+    assert controller.override_slc
+
+    controller_overridden_below = make_controller()
+    try:
+      controller_overridden_below.source = "Dashboard"
+      controller_overridden_below.target = mph(35)
+      controller_overridden_below.previous_source = "Dashboard"
+      controller_overridden_below.previous_target = mph(35)
+      controller_overridden_below.overridden_speed = mph(40)
+      controller_overridden_below.override_slc = True
+
+      sm = make_sm(gas_pressed=True)
+      controller_overridden_below.update_limits(mph(45), datetime.now(timezone.utc), False, mph(75), mph(55), sm)
+      controller_overridden_below.update_override(mph(75), 0.0, mph(55), 0.0, sm)
+
+      assert controller_overridden_below.target == pytest.approx(mph(45))
+      assert controller_overridden_below.overridden_speed == 0
+      assert not controller_overridden_below.override_slc
+    finally:
+      controller_overridden_below.shutdown()
+  finally:
+    controller.shutdown()
+
+
+def test_manual_override_survives_brief_enabled_flicker():
+  controller = make_controller()
+  try:
+    controller.source = "Dashboard"
+    controller.target = mph(45)
+    controller.previous_source = "Dashboard"
+    controller.previous_target = mph(45)
+    controller.overridden_speed = mph(55)
+    controller.override_slc = True
+
+    disabled_sm = make_sm(gas_pressed=False, enabled=False)
+    for _ in range(int(0.5 / DT_MDL)):
+      controller.update_override(mph(75), 0.0, mph(65), 0.0, disabled_sm)
+
+    assert controller.overridden_speed == pytest.approx(mph(55))
+    assert controller.override_slc
+
+    controller.update_override(mph(75), 0.0, mph(65), 0.0, make_sm(gas_pressed=False, enabled=True))
+
+    assert controller.overridden_speed == pytest.approx(mph(55))
+    assert controller.override_slc
+  finally:
+    controller.shutdown()
+
+
+def test_manual_override_clears_after_sustained_disengage():
+  controller = make_controller()
+  try:
+    controller.source = "Dashboard"
+    controller.target = mph(45)
+    controller.previous_source = "Dashboard"
+    controller.previous_target = mph(45)
+    controller.overridden_speed = mph(55)
+    controller.override_slc = True
+    controller.override_requires_gas_release = True
+
+    disabled_sm = make_sm(gas_pressed=False, enabled=False)
+    for _ in range(int(1.0 / DT_MDL) + 1):
+      controller.update_override(mph(75), 0.0, mph(65), 0.0, disabled_sm)
+
+    assert controller.overridden_speed == 0
+    assert not controller.override_slc
+    assert not controller.override_requires_gas_release
   finally:
     controller.shutdown()

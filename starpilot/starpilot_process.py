@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
+import copy
 import datetime
 import hashlib
+import importlib
 import json
 import requests
 import time
@@ -13,6 +15,7 @@ from openpilot.common.realtime import DT_MDL, Priority, Ratekeeper, config_realt
 from openpilot.common.time_helpers import system_time_valid
 from openpilot.system.sentry import capture_report
 from openpilot.system.athena.registration import UNREGISTERED_DONGLE_ID
+from openpilot.system.hardware.hw import Paths
 
 from openpilot.starpilot.assets.model_manager import MODEL_DOWNLOAD_ALL_PARAM, MODEL_DOWNLOAD_PARAM, ModelManager
 from openpilot.starpilot.assets.theme_manager import THEME_COMPONENT_PARAMS, ThemeManager
@@ -30,11 +33,14 @@ from openpilot.starpilot.system.starpilot_stats import send_stats
 from openpilot.starpilot.system.starpilot_tracking import StarPilotTracking
 
 ASSET_CHECK_RATE = (1 / DT_MDL)
+DASHBOARD_ANALYSIS_REFRESH_RATE = 60
 DRIVE_STATS_SYNC_RATE = 30
 OFFROAD_GPS_MEMORY_REFRESH_SECONDS = 1.0
 OFFROAD_GPS_PERSIST_REFRESH_SECONDS = 30.0
 TOGGLE_BROADCAST_INTERVAL_FRAMES = int(1 / DT_MDL)
 UPDATE_CHECK_INTERVAL_SECONDS = 60 * 60
+
+_DASHBOARD_UTILITIES = None
 
 
 def get_update_check_phase_seconds(params_raw):
@@ -70,7 +76,11 @@ def build_gps_position(gps_location, speed):
 
 
 def gps_position_valid(gps_position):
-  return bool(gps_position["hasFix"]) and (gps_position["latitude"] != 0 or gps_position["longitude"] != 0)
+  if not gps_position:
+    return False
+  latitude = gps_position.get("latitude")
+  longitude = gps_position.get("longitude")
+  return bool(gps_position.get("hasFix")) and latitude is not None and longitude is not None and (latitude != 0 or longitude != 0)
 
 
 def gps_position_signature(gps_position):
@@ -143,8 +153,33 @@ def sync_drive_stats(params, session):
   except Exception as exception:
     print(f"Failed to sync drive stats: {exception}")
 
+def get_dashboard_utilities():
+  global _DASHBOARD_UTILITIES
+
+  if _DASHBOARD_UTILITIES is None:
+    _DASHBOARD_UTILITIES = importlib.import_module("openpilot.starpilot.system.the_galaxy.utilities")
+  return _DASHBOARD_UTILITIES
+
+def get_dashboard_footage_paths():
+  try:
+    return [
+      Paths.log_root(HD=True, raw=True),
+      Paths.log_root(konik=True, raw=True),
+      Paths.log_root(raw=True),
+    ]
+  except TypeError:
+    return [
+      "/data/media/0/realdata_HD/",
+      "/data/media/0/realdata_konik/",
+      str(Paths.log_root()),
+    ]
+
+def refresh_dashboard_analysis():
+  get_dashboard_utilities().get_dashboard_stats(get_dashboard_footage_paths())
+
 def transition_offroad(starpilot_planner, model_manager, theme_manager, thread_manager, time_validated, sm, params, starpilot_toggles):
-  params.put("LastGPSPosition", json.dumps(starpilot_planner.gps_position))
+  if gps_position_valid(starpilot_planner.gps_position):
+    params.put("LastGPSPosition", json.dumps(starpilot_planner.gps_position))
 
   if starpilot_toggles.lock_doors_timer != 0:
     thread_manager.run_with_lock(lock_doors, (starpilot_toggles.lock_doors_timer, sm, params), report=False)
@@ -175,11 +210,12 @@ def update_checks(now, model_manager, theme_manager, thread_manager, params, par
 
   time.sleep(1)
 
-def update_toggles(starpilot_variables, started, theme_manager, thread_manager, time_validated, params, starpilot_toggles):
+def update_toggles(starpilot_variables, started, theme_manager, thread_manager, time_validated, params, starpilot_toggles,
+                   clear_update_flag=True):
   previous_holiday_themes = starpilot_toggles.holiday_themes
   previous_random_themes = starpilot_toggles.random_themes
 
-  starpilot_variables.update(theme_manager.holiday_theme, started)
+  starpilot_variables.update(theme_manager.holiday_theme, started, clear_update_flag=clear_update_flag)
   starpilot_toggles = starpilot_variables.starpilot_toggles
 
   randomize_theme = starpilot_toggles.holiday_themes != previous_holiday_themes
@@ -190,6 +226,20 @@ def update_toggles(starpilot_variables, started, theme_manager, thread_manager, 
 
   return starpilot_toggles
 
+
+def update_toggles_in_background(result, starpilot_variables, started, theme_manager, thread_manager, time_validated, params,
+                                 starpilot_toggles):
+  """Reload toggles without mutating the values used by the planner mid-update."""
+  try:
+    updated_variables = copy.copy(starpilot_variables)
+    updated_variables.starpilot_toggles = copy.copy(starpilot_toggles)
+    updated_toggles = update_toggles(updated_variables, started, theme_manager, thread_manager, time_validated, params,
+                                     updated_variables.starpilot_toggles, clear_update_flag=False)
+    result["update"] = (updated_variables, updated_toggles)
+  except Exception:
+    result["failed"] = True
+    raise
+
 def starpilot_thread():
   rate_keeper = Ratekeeper(1 / DT_MDL, None)
 
@@ -199,7 +249,7 @@ def starpilot_thread():
   sm = messaging.SubMaster(["carControl", "carState", "controlsState", "deviceState", "driverMonitoringState",
                             "gpsLocation", "gpsLocationExternal", "liveParameters", "managerState", "modelV2",
                             "onroadEvents", "pandaStates", "radarState", "selfdriveState", "starpilotCarState",
-                            "starpilotSelfdriveState", "starpilotModelV2", "starpilotOnroadEvents", "mapdOut"],
+                            "starpilotRadarState", "starpilotSelfdriveState", "starpilotModelV2", "starpilotOnroadEvents", "mapdOut"],
                             poll="modelV2")
 
   params = Params(return_defaults=True)
@@ -215,8 +265,10 @@ def starpilot_thread():
   starpilot_toggles = starpilot_variables.starpilot_toggles
   serialized_starpilot_toggles = serialize_starpilot_toggles(starpilot_toggles)
   toggle_broadcast_pending = True
+  toggle_update_result = {}
 
   drive_stats_session = requests.Session()
+  next_dashboard_analysis_refresh = 0.0
   next_drive_stats_sync = 0.0
   periodic_update_phase = get_update_check_phase_seconds(params_raw)
   next_periodic_update_check = get_next_periodic_update_check(time.monotonic(), periodic_update_phase)
@@ -299,6 +351,13 @@ def starpilot_thread():
     elif started:
       next_drive_stats_sync = 0.0
 
+    if not started and time_validated:
+      if monotonic_now >= next_dashboard_analysis_refresh:
+        thread_manager.run_with_lock(refresh_dashboard_analysis, report=False)
+        next_dashboard_analysis_refresh = monotonic_now + DASHBOARD_ANALYSIS_REFRESH_RATE
+    elif started:
+      next_dashboard_analysis_refresh = 0.0
+
     if rate_keeper.frame % ASSET_CHECK_RATE == 0:
       check_assets(now, model_manager, theme_manager, thread_manager, params, params_memory, starpilot_toggles)
 
@@ -313,8 +372,9 @@ def starpilot_thread():
     elif current_safe_mode and (params_memory.get_bool("StarPilotTogglesUpdated") or rate_keeper.frame % SAFE_MODE_ENFORCE_FRAMES == 0):
       apply_safe_mode(params, params_raw, params_memory, ensure_backup=False)
 
-    if params_memory.get_bool("StarPilotTogglesUpdated") or theme_manager.theme_updated:
-      starpilot_toggles = update_toggles(starpilot_variables, started, theme_manager, thread_manager, time_validated, params, starpilot_toggles)
+    completed_toggle_update = toggle_update_result.pop("update", None)
+    if completed_toggle_update is not None:
+      starpilot_variables, starpilot_toggles = completed_toggle_update
       serialized_starpilot_toggles = serialize_starpilot_toggles(starpilot_toggles)
       toggle_broadcast_pending = True
 
@@ -322,6 +382,22 @@ def starpilot_thread():
       if model_randomizer_enabled and not model_randomizer_previously and not started:
         model_manager.randomize_selected_model()
       model_randomizer_previously = model_randomizer_enabled
+
+    toggle_update_result.pop("failed", None)
+    toggle_refresh_requested = params_memory.get_bool("StarPilotTogglesUpdated") or theme_manager.theme_updated
+    toggle_update_running = thread_manager.is_thread_alive("update_toggles_in_background")
+    if started and toggle_refresh_requested and not toggle_update_running and not toggle_update_result:
+      # StarPilotVariables.update performs hundreds of param reads and can exceed
+      # the starpilotPlan liveness timeout. Keep that work off the planner loop.
+      params_memory.remove("StarPilotTogglesUpdated")
+      thread_manager.run_with_lock(
+        update_toggles_in_background,
+        (toggle_update_result, starpilot_variables, started, theme_manager, thread_manager, time_validated, params, starpilot_toggles),
+      )
+    elif not started and toggle_refresh_requested:
+      starpilot_toggles = update_toggles(starpilot_variables, started, theme_manager, thread_manager, time_validated, params, starpilot_toggles)
+      serialized_starpilot_toggles = serialize_starpilot_toggles(starpilot_toggles)
+      toggle_broadcast_pending = True
 
     periodic_update_due = monotonic_now >= next_periodic_update_check
     if periodic_update_due:

@@ -2,11 +2,13 @@ from opendbc.car import Bus, structs, get_safety_config, uds
 from opendbc.car.toyota.carstate import CarState
 from opendbc.car.toyota.carcontroller import CarController
 from opendbc.car.toyota.radar_interface import RadarInterface
-from opendbc.car.toyota.values import Ecu, CAR, DBC, ToyotaFlags, CarControllerParams, TSS2_CAR, RADAR_ACC_CAR, NO_DSU_CAR, \
+from opendbc.car.toyota.values import Ecu, CAR, DBC, ToyotaFlags, CarControllerParams, TSS2_CAR, RADAR_ACC_CAR, SECOC_CAR, NO_DSU_CAR, \
                                                   MIN_ACC_SPEED, EPS_SCALE, NO_STOP_TIMER_CAR, ANGLE_CONTROL_CAR, \
                                                   ToyotaSafetyFlags
 from opendbc.car.disable_ecu import disable_ecu
 from opendbc.car.interfaces import CarInterfaceBase
+from opendbc.safety import ALTERNATIVE_EXPERIENCE
+from openpilot.common.params import Params
 
 SteerControlType = structs.CarParams.SteerControlType
 
@@ -25,6 +27,9 @@ class CarInterface(CarInterfaceBase):
     ret.brand = "toyota"
     ret.safetyConfigs = [get_safety_config(structs.CarParams.SafetyModel.toyota)]
     ret.safetyConfigs[0].safetyParam = EPS_SCALE[candidate]
+
+    if candidate == CAR.LEXUS_IS:
+      ret.safetyConfigs[0].safetyParam |= ToyotaSafetyFlags.ALT_CRUISE.value
 
     # BRAKE_MODULE is on a different address for these cars
     if DBC[candidate][Bus.pt] == "toyota_new_mc_pt_generated":
@@ -58,6 +63,17 @@ class CarInterface(CarInterfaceBase):
       # sDSU / radar filter hardware needs the Toyota safety long-filter TX set.
       ret.safetyConfigs[0].safetyParam |= ToyotaSafetyFlags.LONG_FILTER.value
 
+    # A DSU bypass adapter reroutes the stock DSU messages to the camera bus.
+    # These messages are normally absent there on pre-TSS2 platforms.
+    camera_fingerprint = fingerprint.get(2, {})
+    has_dsu_bypass = 0x343 in camera_fingerprint or 0x4CB in camera_fingerprint
+    if candidate == CAR.LEXUS_IS:
+      # The IS mirrors its native buses onto camera bus during startup without a bypass adapter.
+      has_dsu_bypass = ((0x343 in camera_fingerprint and 0x343 not in fingerprint.get(1, {})) or
+                        (0x4CB in camera_fingerprint and 0x4CB not in fingerprint.get(0, {})))
+    if not use_sdsu and candidate not in TSS2_CAR and has_dsu_bypass:
+      ret.flags |= ToyotaFlags.DSU_BYPASS.value
+
     # In TSS2 cars, the camera does long control
     found_ecus = [fw.ecu for fw in car_fw]
 
@@ -66,10 +82,11 @@ class CarInterface(CarInterfaceBase):
 
     if candidate == CAR.TOYOTA_PRIUS:
       stop_and_go = True
+      ret.flags |= ToyotaFlags.HYBRID.value
       # Only give steer angle deadzone to for bad angle sensor prius
       for fw in car_fw:
         if fw.ecu == "eps" and not fw.fwVersion == b'8965B47060\x00\x00\x00\x00\x00\x00':
-          ret.steerActuatorDelay = 0.25
+          ret.steerActuatorDelay = 0.14
           CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning, steering_angle_deadzone_deg=0.3)
 
     elif candidate in (CAR.LEXUS_RX, CAR.LEXUS_RX_TSS2):
@@ -110,7 +127,9 @@ class CarInterface(CarInterfaceBase):
 
     # No radar dbc for cars without DSU which are not TSS 2.0
     # TODO: make an adas dbc file for dsu-less models
-    ret.radarUnavailable = Bus.radar not in DBC[candidate] or candidate in (NO_DSU_CAR - TSS2_CAR)
+    ret.radarUnavailable = Bus.radar not in DBC[candidate] or candidate in (NO_DSU_CAR - TSS2_CAR - {CAR.TOYOTA_CAMRY})
+    if candidate == CAR.TOYOTA_CAMRY:
+      ret.radarTimeStepDEPRECATED = 0.1
 
     # Since we don't yet parse radar on TSS2/TSS-P radar-based ACC cars, gate
     # longitudinal behind the alpha-long toggle.
@@ -132,11 +151,19 @@ class CarInterface(CarInterfaceBase):
     #  - TSS2 radar ACC cars (disables radar)
 
     ret.openpilotLongitudinalControl = (use_sdsu or
+                                        bool(ret.flags & ToyotaFlags.DSU_BYPASS.value) or
                                         candidate in (TSS2_CAR - RADAR_ACC_CAR) or
                                         bool(ret.flags & ToyotaFlags.DISABLE_RADAR.value))
 
     ret.autoResumeSng = ret.openpilotLongitudinalControl and candidate in NO_STOP_TIMER_CAR
     ret.enableGasInterceptorDEPRECATED = 0x201 in fingerprint[0] and ret.openpilotLongitudinalControl
+    if ret.enableGasInterceptorDEPRECATED:
+      ret.safetyConfigs[0].safetyParam |= ToyotaSafetyFlags.GAS_INTERCEPTOR.value
+
+    toyota_auto_hold = Params(return_defaults=True).get_bool("ToyotaAutoHold")
+    if toyota_auto_hold and candidate in (TSS2_CAR - RADAR_ACC_CAR - SECOC_CAR):
+      ret.alternativeExperience |= ALTERNATIVE_EXPERIENCE.ALLOW_AEB
+      ret.flags |= ToyotaFlags.AUTO_BRAKE_HOLD.value
 
     if not ret.openpilotLongitudinalControl:
       ret.safetyConfigs[0].safetyParam |= ToyotaSafetyFlags.STOCK_LONGITUDINAL.value
@@ -145,7 +172,11 @@ class CarInterface(CarInterfaceBase):
     # to a negative value, so it won't matter.
     ret.minEnableSpeed = -1. if (stop_and_go or ret.enableGasInterceptorDEPRECATED) else MIN_ACC_SPEED
 
-    if candidate in TSS2_CAR or ret.enableGasInterceptorDEPRECATED:
+    prius_long_defaults = candidate == CAR.TOYOTA_PRIUS and ret.openpilotLongitudinalControl
+    camry_hybrid_long_defaults = (candidate == CAR.TOYOTA_CAMRY and ret.openpilotLongitudinalControl and
+                                  bool(ret.flags & ToyotaFlags.HYBRID.value))
+
+    if candidate in TSS2_CAR or ret.enableGasInterceptorDEPRECATED or prius_long_defaults:
       ret.flags |= ToyotaFlags.RAISED_ACCEL_LIMIT.value
 
       ret.vEgoStopping = 0.25
@@ -155,6 +186,13 @@ class CarInterface(CarInterfaceBase):
       # Hybrids have much quicker longitudinal actuator response
       if ret.flags & ToyotaFlags.HYBRID.value:
         ret.longitudinalActuatorDelay = 0.05
+
+    if camry_hybrid_long_defaults:
+      # The THS eCVT responds much faster than the legacy non-TSS2 ICE tune.
+      ret.longitudinalActuatorDelay = 0.05
+      ret.vEgoStopping = 0.25
+      ret.vEgoStarting = 0.25
+      ret.stoppingDecelRate = 0.3
 
     if ret.enableGasInterceptorDEPRECATED:
       # Pedal/SDSU Toyotas feel best with a softer final stop clamp.

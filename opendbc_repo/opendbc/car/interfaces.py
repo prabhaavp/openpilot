@@ -22,6 +22,7 @@ from opendbc.car.honda.values import CAR as HONDA, HONDA_BOSCH, HondaFlags, Hond
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.values import CAR as HYUNDAI, CANFD_CAR, HyundaiFlags, HyundaiStarPilotFlags, HyundaiStarPilotSafetyFlags, ALT_BUS_LDA_BUTTON_CARS
 from opendbc.car.mock.values import CAR as MOCK
+from opendbc.car.subaru.values import CAR as SUBARU, SubaruSafetyFlags
 from opendbc.car.toyota.values import CAR as TOYOTA, NO_DSU_CAR, TSS2_CAR, UNSUPPORTED_DSU_CAR, ToyotaStarPilotFlags, ToyotaSafetyFlags
 from opendbc.car.values import PLATFORMS
 from opendbc.can import CANParser
@@ -133,6 +134,7 @@ class CarInterfaceBase(ABC):
 
     dbc_names = {bus: cp.dbc_name for bus, cp in self.can_parsers.items()}
     self.CC: CarControllerBase = self.CarController(dbc_names, CP)
+    self.CC.FPCP = FPCP
 
     self.FPCP = FPCP
 
@@ -174,8 +176,11 @@ class CarInterfaceBase(ABC):
 
     ret = cls._get_params(ret, candidate, fingerprint, car_fw, alpha_long, is_release, docs)
 
+    trailer_load_kg = float(np.clip(getattr(starpilot_toggles, "trailer_load_kg", 0.0) or 0.0, 0.0, 15000.0 * CV.LB_TO_KG))
+
     # Vehicle mass is published curb weight plus assumed payload such as a human driver; notCars have no assumed payload
     if not ret.notCar:
+      ret.mass = ret.mass + trailer_load_kg
       ret.mass = ret.mass + STD_CARGO_KG
 
     # Set params dependent on values set by the car interface
@@ -211,6 +216,9 @@ class CarInterfaceBase(ABC):
         if candidate == CHRYSLER.RAM_HD_5TH_GEN:
           if 570 not in fingerprint[0]:
             fp_ret.flags |= ChryslerStarPilotFlags.RAM_HD_ALT_BUTTONS.value
+        if 0x4FF in fingerprint[0]:
+          fp_ret.flags |= ChryslerStarPilotFlags.NO_MIN_STEERING_SPEED.value
+          CP.minSteerSpeed = 0.
 
       elif platform in GM:
         fp_ret.canUsePedal = True
@@ -262,6 +270,10 @@ class CarInterfaceBase(ABC):
 
       elif platform.config.platform_str == "TESLA_MODEL_S_PREAP":
         fp_ret.canUsePedal = True
+
+      elif platform in SUBARU:
+        if getattr(starpilot_toggles, "subaru_sng", False):
+          fp_ret.safetyConfigs[-1].safetyParam |= SubaruSafetyFlags.STOP_AND_GO.value
 
     return fp_ret
 
@@ -497,6 +509,7 @@ class CarStateBase(ABC):
 class CarControllerBase(ABC):
   def __init__(self, dbc_names: dict[StrEnum, str], CP: structs.CarParams):
     self.CP = CP
+    self.FPCP: custom.StarPilotCarParams | None = None
     self.frame = 0
     self.secoc_key: bytes = b"00" * 16
 

@@ -27,7 +27,6 @@ def make_toggles(**overrides):
     "pause_lateral_below_signal": True,
     "pause_lateral_signal_delay": 0.0,
     "set_speed_offset": 0,
-    "stop_distance": 6.0,
     "weather_presets": False,
   }
   defaults.update(overrides)
@@ -115,5 +114,70 @@ def test_lateral_resume_delay_ignores_signal_cycles_that_never_slow_enough(monke
 
     assert planner.lateral_check is True
     assert planner.blinker_delay_active is False
+  finally:
+    planner.shutdown()
+
+
+def test_radarless_follow_hold_applies_to_tracked_vision_lead(monkeypatch):
+  planner = StarPilotPlanner(Path("/tmp/nonexistent"), DummyThemeManager())
+
+  try:
+    monkeypatch.setattr(starpilot_planner_module.time, "monotonic", lambda: 100.0)
+    planner.model_length = 30.0
+    planner.tracking_lead = True
+    planner.starpilot_following.t_follow = 1.45
+    planner.lead_one = SimpleNamespace(
+      status=True,
+      dRel=46.0,
+      vLead=27.0,
+      aLeadK=0.0,
+      modelProb=0.98,
+      radar=False,
+    )
+
+    planner.update_lead_status(27.5)
+    assert planner.radarless_follow_hold_until > 100.0
+  finally:
+    planner.shutdown()
+
+
+def test_tracked_vision_lead_uses_exit_hysteresis_at_mid_speed():
+  planner = StarPilotPlanner(Path("/tmp/nonexistent"), DummyThemeManager())
+
+  try:
+    planner.model_length = 174.0
+    planner.tracking_lead = True
+    planner.tracking_lead_filter.x = 1.0
+    planner.lead_one = SimpleNamespace(
+      status=True,
+      dRel=44.5,
+      vLead=16.7,
+      yRel=-0.69,
+      aLeadK=0.0,
+      modelProb=0.99,
+      radar=False,
+    )
+
+    assert planner.update_lead_status(16.8)
+  finally:
+    planner.shutdown()
+
+
+def test_untracked_vision_lead_still_uses_strict_entry_gate():
+  planner = StarPilotPlanner(Path("/tmp/nonexistent"), DummyThemeManager())
+
+  try:
+    planner.model_length = 174.0
+    planner.lead_one = SimpleNamespace(
+      status=True,
+      dRel=44.5,
+      vLead=16.7,
+      yRel=-0.69,
+      aLeadK=0.0,
+      modelProb=0.99,
+      radar=False,
+    )
+
+    assert not planner.update_lead_status(16.8)
   finally:
     planner.shutdown()

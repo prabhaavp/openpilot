@@ -46,7 +46,7 @@ class MultiOptionDialog(Widget):
 
   def _render(self, rect):
     dialog_rect = rl.Rectangle(rect.x + MARGIN, rect.y + MARGIN, rect.width - 2 * MARGIN, rect.height - 2 * MARGIN)
-    rl.draw_rectangle_rounded(dialog_rect, 0.02, 20, rl.Color(30, 30, 30, 255))
+    rl.draw_rectangle_rounded(dialog_rect, 0.02, 20, rl.Color(10, 12, 16, 255))
 
     content_rect = rl.Rectangle(dialog_rect.x + MARGIN, dialog_rect.y + MARGIN,
                                 dialog_rect.width - 2 * MARGIN, dialog_rect.height - 2 * MARGIN)
@@ -75,5 +75,5 @@ class MultiOptionDialog(Widget):
     self.cancel_button.render(cancel_rect)
 
     select_rect = rl.Rectangle(content_rect.x + button_w + BUTTON_SPACING, button_y, button_w, BUTTON_HEIGHT)
-    self.select_button.set_enabled(self.selection != self.current)
+    self.select_button.set_enabled(bool(self.selection))
     self.select_button.render(select_rect)

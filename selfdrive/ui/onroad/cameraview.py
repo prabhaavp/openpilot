@@ -1,4 +1,5 @@
 import platform
+import weakref
 import numpy as np
 import pyray as rl
 
@@ -93,6 +94,7 @@ class CameraView(Widget):
     self.egl_texture: rl.Texture | None = None
 
     self._placeholder_color: rl.Color | None = None
+    self._closed = False
 
     # Initialize EGL for zero-copy rendering on TICI
     if TICI:
@@ -104,19 +106,31 @@ class CameraView(Widget):
       self.egl_texture = rl.load_texture_from_image(temp_image)
       rl.unload_image(temp_image)
 
-    ui_state.add_offroad_transition_callback(self._offroad_transition)
+    self_ref = weakref.ref(self)
+
+    def offroad_transition_callback():
+      if (view := self_ref()) is not None:
+        view._offroad_transition()
+
+    self._offroad_transition_callback = offroad_transition_callback
+    ui_state.add_offroad_transition_callback(self._offroad_transition_callback)
 
   def _offroad_transition(self):
-    # Reconnect if not first time going onroad
-    if ui_state.is_onroad() and self.frame is not None:
-      # Prevent old frames from showing when going onroad. Qt has a separate thread
-      # which drains the VisionIpcClient SubSocket for us. Re-connecting is not enough
-      # and only clears internal buffers, not the message queue.
-      self.frame = None
-      self.available_streams.clear()
-      if self.client:
-        del self.client
-      self.client = VisionIpcClient(self._name, self._stream_type, conflate=True)
+    self._reset_camera_connection()
+
+  def _reset_camera_connection(self):
+    # EGL images and VisionBuf objects both retain the imported camera buffer.
+    # Release them on every road-state transition instead of pinning the old
+    # camerad allocation until this view happens to render again.
+    self._clear_textures()
+    self.frame = None
+    self.available_streams.clear()
+    self.client = VisionIpcClient(self._name, self._stream_type, conflate=True)
+    self._target_client = None
+    self._target_stream_type = None
+    self._switching = False
+    self._texture_needs_update = True
+    self.last_connection_attempt = 0.0
 
   def _set_placeholder_color(self, color: rl.Color):
     """Set a placeholder color to be drawn when no frame is available."""
@@ -143,6 +157,14 @@ class CameraView(Widget):
     return self._stream_type
 
   def close(self) -> None:
+    if self._closed:
+      return
+    self._closed = True
+
+    callback = getattr(self, "_offroad_transition_callback", None)
+    if callback is not None:
+      ui_state.remove_offroad_transition_callback(callback)
+      self._offroad_transition_callback = None
     self._clear_textures()
 
     # Clean up EGL texture
@@ -157,6 +179,7 @@ class CameraView(Widget):
     self.frame = None
     self.available_streams.clear()
     self.client = None
+    self._target_client = None
 
   def __del__(self):
     self.close()

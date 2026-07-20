@@ -2,271 +2,383 @@ from __future__ import annotations
 
 from openpilot.system.hardware import HARDWARE
 from openpilot.selfdrive.ui.lib.starpilot_state import starpilot_state
-from openpilot.system.ui.lib.application import gui_app
+from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr, tr_noop
 from openpilot.system.ui.widgets import DialogResult
-from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
 
 from openpilot.selfdrive.ui.layouts.settings.starpilot.panel import _SettingsPage
 from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import (
-  SettingRow, SettingSection, AetherSettingsView, COMPACT_PANEL_METRICS,
-)
-from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import (
-  AETHER_LIST_METRICS,
+  DEFAULT_PANEL_STYLE,
+  AetherSettingsView,
+  CardHubManagerView,
+  ParentToggle,
+  SettingRow,
+  SettingSection,
   AetherSliderDialog,
-  panel_style_from_color,
 )
-
-
-PANEL_STYLE = panel_style_from_color("#3B82F6")
 
 
 def _confirm_reboot_toggle(params, key, state):
   params.put_bool(key, state)
   from openpilot.selfdrive.ui.ui_state import ui_state
   if ui_state.started:
+    from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
     gui_app.push_widget(ConfirmDialog(
       tr("Reboot required. Reboot now?"), tr("Reboot"), tr("Cancel"),
       callback=lambda res: HARDWARE.reboot() if res == DialogResult.CONFIRM else None,
     ))
 
 
+PANEL_STYLE = DEFAULT_PANEL_STYLE
+_LATERAL_TUNE_KEYS = ["TurnDesires", "NNFF", "NNFFLite", "ForceTorqueController"]
+_ADVANCED_LATERAL_KEYS = ["ForceAutoTune", "ForceAutoTuneOff"]
+
+
+def _sync_parent(params, parent_key, child_keys):
+  if any(params.get_bool(k) for k in child_keys):
+    if not params.get_bool(parent_key):
+      params.put_bool(parent_key, True)
+  else:
+    if params.get_bool(parent_key):
+      params.put_bool(parent_key, False)
+
+
 # ═══════════════════════════════════════════════════════════════
-# StarPilotAdvancedLateralLayout
+# SteeringManagerView — 3-card category hub
 # ═══════════════════════════════════════════════════════════════
 
-class StarPilotAdvancedLateralLayout(_SettingsPage):
-  def __init__(self):
-    super().__init__()
-    self._build_view()
+class SteeringManagerView(CardHubManagerView):
+  def __init__(self, controller, **kwargs):
+    super().__init__(controller, [], **kwargs)
 
-  def _advanced_enabled(self):
-    return self._params.get_bool("AdvancedLateralTune")
-
-  def _using_nnff(self):
-    return starpilot_state.car_state.hasNNFFLog and self._params.get_bool("LateralTune") and self._params.get_bool("NNFF")
-
-  def _forcing_auto_tune(self):
-    return not starpilot_state.car_state.hasAutoTune and self._params.get_bool("ForceAutoTune")
-
-  def _forcing_auto_tune_off(self):
-    return starpilot_state.car_state.hasAutoTune and self._params.get_bool("ForceAutoTuneOff")
-
-  def _forcing_torque_controller(self):
-    return not starpilot_state.car_state.isAngleCar and self._params.get_bool("ForceTorqueController")
-
-  def _torque_tuning_active(self):
-    return starpilot_state.car_state.isTorqueCar or self._forcing_torque_controller() or self._using_nnff()
-
-  def _manual_tuning_values_enabled(self):
-    if starpilot_state.car_state.hasAutoTune:
-      return self._forcing_auto_tune_off()
-    return not self._forcing_auto_tune()
-
-  def _build_view(self):
-    adv = self._advanced_enabled
-    torque = self._torque_tuning_active
-    manual = self._manual_tuning_values_enabled
-    nnff = self._using_nnff
-
-    sections = [
-      SettingSection(tr_noop("Steering Tuning"), [
-        SettingRow("SteerDelay", "value", tr_noop("Actuator Delay"),
-                   subtitle=tr_noop("The time between openpilot's steering command and the vehicle's response."),
-                   get_value=lambda: f"{self._params.get_float('SteerDelay'):.2f}s",
-                   on_click=lambda: self._show_slider("SteerDelay", 0.01, 1.0, step=0.01, unit="s", value_type="float"),
-                   visible=lambda: adv() and starpilot_state.car_state.steerActuatorDelay != 0),
-        SettingRow("SteerFriction", "value", tr_noop("Friction"),
-                   subtitle=tr_noop("Compensates for steering friction around center."),
-                   get_value=lambda: f"{self._params.get_float('SteerFriction'):.3f}",
-                   on_click=lambda: self._show_slider("SteerFriction", 0.0, max(1.0, starpilot_state.car_state.friction * 1.5), step=0.01, value_type="float"),
-                   visible=lambda: adv() and starpilot_state.car_state.friction != 0 and torque() and not nnff() and manual()),
-        SettingRow("SteerKP", "value", tr_noop("Kp Factor"),
-                   subtitle=tr_noop("How strongly openpilot corrects lateral position."),
-                   get_value=lambda: f"{self._params.get_float('SteerKP'):.2f}",
-                   on_click=lambda: self._show_slider("SteerKP", max(0.01, starpilot_state.car_state.steerKp) * 0.5, max(0.01, starpilot_state.car_state.steerKp) * 1.5, step=0.01, value_type="float"),
-                   visible=lambda: adv() and starpilot_state.car_state.steerKp != 0 and torque() and not starpilot_state.car_state.isAngleCar),
-        SettingRow("SteerLatAccel", "value", tr_noop("Lateral Acceleration"),
-                   subtitle=tr_noop("Maps steering torque to turning response."),
-                   get_value=lambda: f"{self._params.get_float('SteerLatAccel'):.2f}",
-                   on_click=lambda: self._show_slider("SteerLatAccel", max(0.01, starpilot_state.car_state.latAccelFactor) * 0.5, max(0.01, starpilot_state.car_state.latAccelFactor) * 1.5, step=0.01, value_type="float"),
-                   visible=lambda: adv() and starpilot_state.car_state.latAccelFactor != 0 and torque() and not nnff() and manual()),
-        SettingRow("SteerRatio", "value", tr_noop("Steer Ratio"),
-                   subtitle=tr_noop("Adjust the relationship between steering wheel input and road-wheel angle."),
-                   get_value=lambda: f"{self._params.get_float('SteerRatio'):.2f}",
-                   on_click=lambda: self._show_slider("SteerRatio", max(0.01, starpilot_state.car_state.steerRatio) * 0.5, max(0.01, starpilot_state.car_state.steerRatio) * 1.5, step=0.01, value_type="float"),
-                   visible=lambda: adv() and starpilot_state.car_state.steerRatio != 0 and manual()),
-        SettingRow("ForceAutoTune", "toggle", tr_noop("Force Auto-Tune On"),
-                   subtitle=tr_noop("Force-enable live auto-tuning for friction and lateral acceleration."),
-                   get_state=lambda: self._params.get_bool("ForceAutoTune"),
-                   set_state=lambda s: (self._params.put_bool("ForceAutoTune", s), s and self._params.put_bool("ForceAutoTuneOff", False)),
-                   visible=lambda: adv() and not starpilot_state.car_state.hasAutoTune and not starpilot_state.car_state.isAngleCar and torque()),
-        SettingRow("ForceAutoTuneOff", "toggle", tr_noop("Force Auto-Tune Off"),
-                   subtitle=tr_noop("Force-disable live auto-tuning and use your set values instead."),
-                   get_state=lambda: self._params.get_bool("ForceAutoTuneOff"),
-                   set_state=lambda s: (self._params.put_bool("ForceAutoTuneOff", s), s and self._params.put_bool("ForceAutoTune", False)),
-                   visible=lambda: adv() and starpilot_state.car_state.hasAutoTune and not starpilot_state.car_state.isAngleCar),
-        SettingRow("ForceTorqueController", "toggle", tr_noop("Force Torque Controller"),
-                   subtitle=tr_noop("Use torque-based steering control instead of the stock steering mode when supported."),
-                   get_state=lambda: self._params.get_bool("ForceTorqueController"),
-                   set_state=lambda s: _confirm_reboot_toggle(self._params, "ForceTorqueController", s),
-                   visible=lambda: adv() and not starpilot_state.car_state.isAngleCar and not starpilot_state.car_state.isTorqueCar),
-      ]),
+  def _build_cards(self):
+    return [
+      {
+        "title": tr("Steering Behavior"),
+        "desc": tr("Configure Always On Lateral (AOL), pause speed thresholds, and turn signal behaviors."),
+        "icon": "steering",
+        "on_click": lambda: self._controller._navigate_to("behavior"),
+      },
+      {
+        "title": tr("Lane Changes"),
+        "desc": tr("Configure automatic lane changes, speed/width thresholds, and smoothing parameters."),
+        "icon": "road",
+        "on_click": lambda: self._controller._navigate_to("lane_changes"),
+      },
+      {
+        "title": tr("Advanced Lateral Tuning"),
+        "desc": tr("Adjust actuator delay, steer ratio, Kp, friction, and neural network feedforward controllers."),
+        "icon": "system",
+        "on_click": lambda: self._controller._navigate_to("advanced"),
+      },
     ]
-    self._manager_view = AetherSettingsView(
-      self, sections,
-      header_title=tr_noop("Advanced Lateral Tuning"),
-      header_subtitle=tr_noop("Adjust steering response, torque controller behavior, and auto-tuning controls."),
-      panel_style=PANEL_STYLE,
-      metrics=COMPACT_PANEL_METRICS,
-    )
 
 
 # ═══════════════════════════════════════════════════════════════
-# StarPilotLateralLayout — top-level hub with 3 tabs
+# StarPilotLateralLayout — controller
 # ═══════════════════════════════════════════════════════════════
 
 class StarPilotLateralLayout(_SettingsPage):
+
   def __init__(self):
     super().__init__()
+    self._build_panels()
 
-    self._sub_panels = {
-      "advanced_lateral": StarPilotAdvancedLateralLayout(),
-    }
-    self._wire_sub_panels()
-    self._build_view()
-
-  def _build_view(self):
-    tab_defs = [
-      {"id": "steering", "title": tr_noop("Steering"), "subtitle": tr_noop("Steering modes")},
-      {"id": "lane", "title": tr_noop("Lane"), "subtitle": tr_noop("Lane changes")},
-      {"id": "tune", "title": tr_noop("Tune"), "subtitle": tr_noop("Advanced controls")},
-    ]
-
-    sections = [
-      # ── Steering tab ──
-      SettingSection(tr_noop("Steering Modes"), [
-        SettingRow("AlwaysOnLateral", "toggle", tr_noop("Always On Lateral"),
-                   subtitle=tr_noop("Keep lateral control active even without openpilot engaged."),
-                   get_state=lambda: self._params.get_bool("AlwaysOnLateral"),
-                   set_state=lambda s: _confirm_reboot_toggle(self._params, "AlwaysOnLateral", s) if s else self._params.put_bool("AlwaysOnLateral", False)),
-        SettingRow("PauseAOLOnBrake", "value", tr_noop("Pause Below"),
-                   subtitle="",
-                   get_value=lambda: f"{self._params.get_int('PauseAOLOnBrake')} mph",
-                   on_click=lambda: self._show_slider("PauseAOLOnBrake", 0, 100, unit=" mph"),
-                   visible=lambda: self._params.get_bool("AlwaysOnLateral")),
-        SettingRow("QOLLateral", "toggle", tr_noop("Quality of Life"),
-                   subtitle="",
-                   get_state=lambda: self._params.get_bool("QOLLateral"),
-                   set_state=lambda s: self._params.put_bool("QOLLateral", s)),
-        SettingRow("PauseLateralSpeed", "value", tr_noop("Pause Steering Below"),
-                   subtitle="",
-                   get_value=lambda: f"{self._params.get_int('PauseLateralSpeed')} mph",
-                   on_click=lambda: self._show_slider("PauseLateralSpeed", 0, 100, unit=" mph"),
-                   visible=lambda: self._params.get_bool("QOLLateral")),
-        SettingRow("PauseLateralOnSignal", "toggle", tr_noop("Turn Signal Only"),
-                   subtitle=tr_noop("Only pause steering when the turn signal is active."),
-                   get_state=lambda: self._params.get_bool("PauseLateralOnSignal"),
-                   set_state=lambda s: self._params.put_bool("PauseLateralOnSignal", s),
-                   visible=lambda: self._params.get_bool("QOLLateral") and self._params.get_int("PauseLateralSpeed") > 0),
-        SettingRow("LateralResumeDelay", "value", tr_noop("Lateral Resume Delay"),
-                   subtitle=tr_noop("Delay before steering resumes after the turn signal turns off. Set to 0 to disable."),
-                   get_value=lambda: "Off" if self._params.get_float("LateralResumeDelay") == 0 else f"{self._params.get_float('LateralResumeDelay'):.1f}s",
-                   on_click=lambda: self._show_slider("LateralResumeDelay", 0.0, 5.0, step=0.1, unit=" s", value_type="float"),
-                   visible=lambda: self._params.get_bool("QOLLateral") and self._params.get_int("PauseLateralSpeed") > 0 and self._params.get_bool("PauseLateralOnSignal")),
-      ], tab_key="steering"),
-
-      # ── Lane tab ──
-      SettingSection("", [
-        SettingRow("LaneChanges", "toggle", tr_noop("Lane Changes"),
-                   subtitle="",
-                   get_state=lambda: self._params.get_bool("LaneChanges"),
-                   set_state=lambda s: self._params.put_bool("LaneChanges", s)),
-        SettingRow("NudgelessLaneChange", "toggle", tr_noop("Automatic Lane Changes"),
-                   subtitle="",
-                   get_state=lambda: self._params.get_bool("NudgelessLaneChange"),
-                   set_state=lambda s: self._params.put_bool("NudgelessLaneChange", s),
-                   visible=lambda: self._params.get_bool("LaneChanges")),
-        SettingRow("LaneChangeTime", "value", tr_noop("Lane Change Delay"),
-                   subtitle="",
-                   get_value=lambda: f"{self._params.get_float('LaneChangeTime'):.1f}s",
-                   on_click=lambda: self._show_slider("LaneChangeTime", 0.0, 5.0, step=0.1, unit="s", value_type="float"),
-                   visible=lambda: self._params.get_bool("LaneChanges") and self._params.get_bool("NudgelessLaneChange")),
-        SettingRow("MinimumLaneChangeSpeed", "value", tr_noop("Min Lane Change Speed"),
-                   subtitle="",
-                   get_value=lambda: f"{self._params.get_int('MinimumLaneChangeSpeed')} mph",
-                   on_click=lambda: self._show_slider("MinimumLaneChangeSpeed", 0, 100, unit=" mph"),
-                   visible=lambda: self._params.get_bool("LaneChanges")),
-        SettingRow("LaneDetectionWidth", "value", tr_noop("Minimum Lane Width"),
-                   subtitle="",
-                   get_value=lambda: f"{self._params.get_float('LaneDetectionWidth'):.1f} ft",
-                   on_click=lambda: self._show_slider("LaneDetectionWidth", 0.0, 15.0, step=0.1, unit=" ft", value_type="float"),
-                   visible=lambda: self._params.get_bool("LaneChanges") and self._params.get_bool("NudgelessLaneChange")),
-        SettingRow("OneLaneChange", "toggle", tr_noop("One Lane Change Per Signal"),
-                   subtitle="",
-                   get_state=lambda: self._params.get_bool("OneLaneChange"),
-                   set_state=lambda s: self._params.put_bool("OneLaneChange", s),
-                   visible=lambda: self._params.get_bool("LaneChanges")),
-        SettingRow("LaneChangeSmoothing", "value", tr_noop("Lane Change Smoothing"),
-                   subtitle=tr_noop("How smoothly openpilot commits to a lane change. 10 is stock; lower values produce a gentler, more gradual maneuver."),
-                   get_value=lambda: f"{self._params.get_int('LaneChangeSmoothing')}",
-                   on_click=self._show_modal_pace_selector,
-                   visible=lambda: self._params.get_bool("LaneChanges")),
-      ], tab_key="lane"),
-
-      # ── Tune tab ──
-      SettingSection(tr_noop("Advanced Lateral Tuning"), [
-        SettingRow("AdvancedLateralTune", "toggle", tr_noop("Advanced Lateral Tuning"),
-                   subtitle=tr_noop("Advanced steering control changes to fine-tune how openpilot drives."),
-                   get_state=lambda: self._params.get_bool("AdvancedLateralTune"),
-                   set_state=lambda s: self._params.put_bool("AdvancedLateralTune", s)),
-        SettingRow("AdvancedConfigure", "value", tr_noop("Configure"),
-                   subtitle=tr_noop("Adjust steering response, torque controller behavior, and auto-tuning controls."),
-                   get_value=lambda: tr_noop("Settings"),
-                   navigate_to="advanced_lateral",
-                   enabled=lambda: self._params.get_bool("AdvancedLateralTune"),
-                   disabled_label=tr_noop("Enable First")),
-      ], tab_key="tune"),
-      SettingSection(tr_noop("Lateral Tuning"), [
-        SettingRow("LateralTune", "toggle", tr_noop("Lateral Tuning"),
-                   subtitle=tr_noop("Miscellaneous steering control changes such as turn desires and NNFF modes."),
-                   get_state=lambda: self._params.get_bool("LateralTune"),
-                   set_state=lambda s: self._params.put_bool("LateralTune", s)),
-        SettingRow("TurnDesires", "toggle", tr_noop("Force Turn Desires Below Lane Change Speed"),
-                   subtitle=tr_noop("Allow openpilot to follow turn intent below the minimum lane change speed when signaling."),
-                   get_state=lambda: self._params.get_bool("TurnDesires"),
-                   set_state=lambda s: self._params.put_bool("TurnDesires", s),
-                   visible=lambda: self._params.get_bool("LateralTune")),
-        SettingRow("NavDesiresAllowed", "toggle", tr_noop("Use Route Desires"),
-                   subtitle=tr_noop("Allow an active navigation route to request keep-left, keep-right, and low-speed turn desires."),
-                   get_state=lambda: self._params.get_bool("NavDesiresAllowed"),
-                   set_state=lambda s: self._params.put_bool("NavDesiresAllowed", s),
-                   visible=lambda: self._params.get_bool("LateralTune")),
-        SettingRow("NNFF", "toggle", tr_noop("Neural Network Feedforward (NNFF)"),
-                   subtitle=tr_noop("Use the full neural-network feedforward steering controller when available."),
-                   get_state=lambda: self._params.get_bool("NNFF"),
-                   set_state=lambda s: (self._params.put_bool("NNFF", s), s and self._params.put_bool("NNFFLite", False)),
-                   visible=lambda: self._params.get_bool("LateralTune") and starpilot_state.car_state.hasNNFFLog and not starpilot_state.car_state.isAngleCar),
-        SettingRow("NNFFLite", "toggle", tr_noop("Neural Network Feedforward (NNFF) Lite"),
-                   subtitle=tr_noop("Use the lightweight NNFF steering logic when the full model is off."),
-                   get_state=lambda: self._params.get_bool("NNFFLite"),
-                   set_state=lambda s: _confirm_reboot_toggle(self._params, "NNFFLite", s),
-                   visible=lambda: self._params.get_bool("LateralTune") and not self._params.get_bool("NNFF") and not starpilot_state.car_state.isAngleCar),
-      ], tab_key="tune"),
-    ]
-
-    self._manager_view = AetherSettingsView(
-      self, sections,
-      header_title=tr_noop("Steering"),
-      header_subtitle=tr_noop("Fine-tune lateral control, lane changes, and steering behavior."),
-      tab_defs=tab_defs,
-      panel_style=PANEL_STYLE,
-      metrics=COMPACT_PANEL_METRICS,
+  def _make_parent(self, key: str, label: str, subtitle: str = "") -> ParentToggle:
+    return ParentToggle(
+      label=label,
+      subtitle=subtitle,
+      get_state=lambda k=key: self._params.get_bool(k),
+      set_state=lambda s, k=key: self._params.put_bool(k, s),
     )
 
-  def _show_modal_pace_selector(self):
+  def _build_panels(self):
+    p = self._params
+    cs = starpilot_state.car_state
+
+    def alt_on():
+      return p.get_bool("AdvancedLateralTune")
+
+    def aol_on():
+      return p.get_bool("AlwaysOnLateral")
+
+    def lc_on():
+      return p.get_bool("LaneChanges")
+
+    def nlc_on():
+      return lc_on() and p.get_bool("NudgelessLaneChange")
+
+    def pos_on():
+      return p.get_bool("PauseLateralOnSignal")
+
+    # ── 1. Steering Behavior ──
+    self._behavior_rows = [
+      SettingRow(
+        "PauseAOLOnBrake", "value", tr_noop("Pause AOL On Brake"),
+        subtitle=tr_noop("Pause AOL below this speed while brake is pressed."),
+        get_value=lambda: f"{p.get_int('PauseAOLOnBrake')} mph",
+        on_click=lambda: self._show_slider("PauseAOLOnBrake", 0, 100, unit=" mph"),
+        visible=aol_on,
+      ),
+      SettingRow(
+        "PauseLateralSpeed", "value", tr_noop("Pause Lateral Below"),
+        subtitle=tr_noop("Pause steering below the set speed."),
+        get_value=lambda: f"{p.get_int('PauseLateralSpeed')} mph",
+        on_click=self._on_pause_lateral_speed_clicked,
+      ),
+      SettingRow(
+        "PauseLateralOnSignal", "toggle", tr_noop("Turn Signal Only"),
+        subtitle=tr_noop("Only pause steering when turn signal is active."),
+        get_state=lambda: p.get_bool("PauseLateralOnSignal"),
+        set_state=lambda s: p.put_bool("PauseLateralOnSignal", s),
+      ),
+      SettingRow(
+        "LateralResumeDelay", "value", tr_noop("Resume Delay"),
+        subtitle=tr_noop("Delay before lateral resumes after signal off. 0 = Off."),
+        get_value=self._get_resume_delay_display,
+        on_click=lambda: self._show_slider("LateralResumeDelay", 0.0, 5.0, step=0.1, unit="s", value_type="float"),
+        visible=pos_on,
+      ),
+      SettingRow(
+        "NavDesiresAllowed", "toggle", tr_noop("Use Route Desires"),
+        subtitle=tr_noop("Allow navigation to request lane keep and turns."),
+        get_state=lambda: p.get_bool("NavDesiresAllowed"),
+        set_state=lambda s: p.put_bool("NavDesiresAllowed", s),
+      ),
+    ]
+
+    # ── 2. Lane Changes ──
+    self._lane_change_rows = [
+      SettingRow(
+        "NudgelessLaneChange", "toggle", tr_noop("Auto Lane Changes"),
+        subtitle=tr_noop("Signal triggers automatic lane change."),
+        get_state=lambda: p.get_bool("NudgelessLaneChange"),
+        set_state=lambda s: p.put_bool("NudgelessLaneChange", s),
+        visible=lc_on,
+      ),
+      SettingRow(
+        "OneLaneChange", "toggle", tr_noop("One Per Signal"),
+        subtitle=tr_noop("One lane change per signal activation."),
+        get_state=lambda: p.get_bool("OneLaneChange"),
+        set_state=lambda s: p.put_bool("OneLaneChange", s),
+        visible=nlc_on,
+      ),
+      SettingRow(
+        "MinimumLaneChangeSpeed", "value", tr_noop("Min Lane Change Speed"),
+        subtitle=tr_noop("Lowest speed at which openpilot will change lanes."),
+        get_value=lambda: f"{p.get_int('MinimumLaneChangeSpeed')} mph",
+        on_click=lambda: self._show_slider("MinimumLaneChangeSpeed", 0, 100, unit=" mph"),
+        visible=lc_on,
+      ),
+      SettingRow(
+        "LaneChangeTime", "value", tr_noop("Lane Change Delay"),
+        subtitle=tr_noop("Delay before the start of an automatic lane change. 0 = Instant."),
+        get_value=self._get_lane_change_delay_display,
+        on_click=lambda: self._show_slider("LaneChangeTime", 0.0, 5.0, step=0.1, unit="s", value_type="float"),
+        visible=nlc_on,
+      ),
+      SettingRow(
+        "LaneDetectionWidth", "value", tr_noop("Min Lane Width"),
+        subtitle=tr_noop("Prevent lane changes into narrower lanes."),
+        get_value=lambda: f"{p.get_float('LaneDetectionWidth'):.1f} ft",
+        on_click=lambda: self._show_slider("LaneDetectionWidth", 0.0, 15.0, step=0.1, unit=" ft", value_type="float"),
+        visible=nlc_on,
+      ),
+      SettingRow(
+        "LaneChangeSmoothing", "value", tr_noop("Lane Change Smoothing"),
+        subtitle=tr_noop("Smoothness of lane change commit. 10 = Stock, 1 = Smoothest."),
+        get_value=self._get_lane_change_smoothing_display,
+        on_click=self._show_lane_smoothing,
+        visible=lc_on,
+      ),
+    ]
+
+    # ── 3. Advanced Lateral Tuning ──
+    self._advanced_rows = [
+      SettingRow(
+        "NNFF", "toggle", tr_noop("NNFF"),
+        subtitle=tr_noop("Neural net feedforward steering controller."),
+        get_state=lambda: p.get_bool("NNFF"),
+        set_state=lambda s: (p.put_bool("NNFF", s),
+                             s and p.put_bool("NNFFLite", False),
+                             _sync_parent(p, "LateralTune", _LATERAL_TUNE_KEYS)),
+        enabled=lambda: cs.hasNNFFLog and not cs.isAngleCar,
+        disabled_label=tr_noop("Not Available"),
+        visible=alt_on,
+      ),
+      SettingRow(
+        "NNFFLite", "toggle", tr_noop("NNFF Lite"),
+        subtitle=tr_noop("Lightweight NNFF when full model is off."),
+        get_state=lambda: p.get_bool("NNFFLite"),
+        set_state=lambda s: (p.put_bool("NNFFLite", s),
+                             _sync_parent(p, "LateralTune", _LATERAL_TUNE_KEYS)),
+        enabled=lambda: not cs.isAngleCar,
+        disabled_label=tr_noop("Not Available"),
+        visible=alt_on,
+      ),
+      SettingRow(
+        "ForceTorqueController", "toggle", tr_noop("Force Torque Ctrl"),
+        subtitle=tr_noop("Torque-based steering for smoother lane keeping."),
+        get_state=lambda: p.get_bool("ForceTorqueController"),
+        set_state=lambda s: (p.put_bool("ForceTorqueController", s),
+                             _sync_parent(p, "LateralTune", _LATERAL_TUNE_KEYS)),
+        enabled=lambda: not cs.isTorqueCar and not cs.isAngleCar,
+        disabled_label=tr_noop("Not Available"),
+        visible=alt_on,
+      ),
+      SettingRow(
+        "TurnDesires", "toggle", tr_noop("Force Turn Desires"),
+        subtitle=tr_noop("Follow turn intent below min lane change speed."),
+        get_state=lambda: p.get_bool("TurnDesires"),
+        set_state=lambda s: (p.put_bool("TurnDesires", s),
+                             _sync_parent(p, "LateralTune", _LATERAL_TUNE_KEYS)),
+        visible=alt_on,
+      ),
+      SettingRow(
+        "ForceAutoTune", "toggle", tr_noop("Force Auto-Tune On"),
+        subtitle=tr_noop("Force-enable live auto-tuning for friction and lateral accel."),
+        get_state=lambda: p.get_bool("ForceAutoTune"),
+        set_state=lambda s: (p.put_bool("ForceAutoTune", s),
+                             s and p.put_bool("ForceAutoTuneOff", False),
+                             _sync_parent(p, "AdvancedLateralTune", _ADVANCED_LATERAL_KEYS)),
+        enabled=lambda: not cs.hasAutoTune and cs.isTorqueCar and not cs.isAngleCar,
+        disabled_label=tr_noop("Not Available"),
+        visible=alt_on,
+      ),
+      SettingRow(
+        "ForceAutoTuneOff", "toggle", tr_noop("Force Auto-Tune Off"),
+        subtitle=tr_noop("Force-disable auto-tuning and use your set values."),
+        get_state=lambda: p.get_bool("ForceAutoTuneOff"),
+        set_state=lambda s: (p.put_bool("ForceAutoTuneOff", s),
+                             s and p.put_bool("ForceAutoTune", False),
+                             _sync_parent(p, "AdvancedLateralTune", _ADVANCED_LATERAL_KEYS)),
+        enabled=lambda: cs.hasAutoTune and cs.isTorqueCar and not cs.isAngleCar,
+        disabled_label=tr_noop("Not Available"),
+        visible=alt_on,
+      ),
+      SettingRow(
+        "UseAutoSteerDelay", "toggle", tr_noop("Use Auto-Learned Delay"),
+        subtitle=tr_noop("Learn the full steering delay automatically. The manual value below is ignored while enabled."),
+        get_state=lambda: p.get_bool("UseAutoSteerDelay"),
+        set_state=lambda s: p.put_bool("UseAutoSteerDelay", s),
+        visible=lambda: alt_on() and cs.steerActuatorDelay != 0,
+      ),
+      SettingRow(
+        "SteerDelay", "value", tr_noop("Actuator Delay"),
+        subtitle=tr_noop("Exact full delay between steering command and vehicle response."),
+        get_value=lambda: f"{p.get_float('SteerDelay'):.2f}s",
+        on_click=lambda: self._show_slider("SteerDelay", 0.01, 1.0, step=0.01, unit="s", value_type="float"),
+        enabled=lambda: not p.get_bool("UseAutoSteerDelay"),
+        disabled_label=tr_noop("Disabled while auto-learned delay is enabled."),
+        visible=lambda: alt_on() and cs.steerActuatorDelay != 0,
+      ),
+      SettingRow(
+        "SteerFriction", "value", tr_noop("Friction"),
+        subtitle=tr_noop("Compensates for steering friction around center."),
+        get_value=lambda: f"{p.get_float('SteerFriction'):.2f}",
+        on_click=lambda: self._show_slider("SteerFriction", 0.0, max(1.0, cs.friction * 1.5), step=0.01, value_type="float"),
+        visible=lambda: alt_on() and cs.friction != 0 and cs.isTorqueCar and not cs.isAngleCar,
+      ),
+      SettingRow(
+        "SteerKP", "value", tr_noop("Kp Factor"),
+        subtitle=tr_noop("How strongly openpilot corrects lateral position."),
+        get_value=lambda: f"{p.get_float('SteerKP'):.2f}",
+        on_click=lambda: self._show_slider("SteerKP", max(0.01, cs.steerKp) * 0.5, max(0.01, cs.steerKp) * 1.5, step=0.01, value_type="float"),
+        visible=lambda: alt_on() and cs.steerKp != 0 and cs.isTorqueCar and not cs.isAngleCar,
+      ),
+      SettingRow(
+        "SteerLatAccel", "value", tr_noop("Lateral Acceleration"),
+        subtitle=tr_noop("Maps steering torque to turning response."),
+        get_value=lambda: f"{p.get_float('SteerLatAccel'):.2f}",
+        on_click=lambda: self._show_slider("SteerLatAccel", max(0.01, cs.latAccelFactor) * 0.5, max(0.01, cs.latAccelFactor) * 1.5, step=0.01, value_type="float"),
+        visible=lambda: alt_on() and cs.latAccelFactor != 0 and cs.isTorqueCar and not cs.isAngleCar,
+      ),
+      SettingRow(
+        "SteerRatio", "value", tr_noop("Steer Ratio"),
+        subtitle=tr_noop("Relationship between steering wheel and road-wheel angle."),
+        get_value=lambda: f"{p.get_float('SteerRatio'):.1f}",
+        on_click=lambda: self._show_slider("SteerRatio", max(0.01, cs.steerRatio) * 0.5, max(0.01, cs.steerRatio) * 1.5, step=0.01, value_type="float"),
+        visible=lambda: alt_on() and cs.steerRatio != 0,
+      ),
+    ]
+
+    self._manager_view = SteeringManagerView(
+      self,
+      header_title=tr_noop("Steering"),
+      header_subtitle=tr_noop("Configure steering behavior and lane changes."),
+    )
+
+    p = self._params
+    pt_behavior = ParentToggle(
+      label="Always On Lateral",
+      subtitle="Steering stays active when ACC is off.",
+      get_state=lambda: p.get_bool("AlwaysOnLateral"),
+      set_state=lambda s: _confirm_reboot_toggle(p, "AlwaysOnLateral", s) if s else p.put_bool("AlwaysOnLateral", False),
+    )
+    pt_lane_changes = self._make_parent("LaneChanges", "Lane Changes",
+      "Allow openpilot to change lanes.")
+    pt_advanced = self._make_parent("AdvancedLateralTune", "Advanced Lateral Tuning",
+      "Fine-tune steering response and auto-tuning.")
+
+    # Register subpanels for Level 2 slide transitions
+    self._sub_panels["behavior"] = AetherSettingsView(
+      self,
+      [SettingSection(title="", rows=self._behavior_rows)],
+      header_title=tr_noop("Steering Behavior"),
+      header_subtitle=tr_noop("Configure Always On Lateral (AOL), pause speed thresholds, and turn signal behaviors."),
+      parent_toggle=pt_behavior,
+      panel_style=PANEL_STYLE,
+    )
+    self._sub_panels["lane_changes"] = AetherSettingsView(
+      self,
+      [SettingSection(title="", rows=self._lane_change_rows)],
+      header_title=tr_noop("Lane Changes"),
+      header_subtitle=tr_noop("Configure automatic lane changes, speed/width thresholds, and smoothing parameters."),
+      parent_toggle=pt_lane_changes,
+      panel_style=PANEL_STYLE,
+    )
+    self._sub_panels["advanced"] = AetherSettingsView(
+      self,
+      [SettingSection(title="", rows=self._advanced_rows)],
+      header_title=tr_noop("Advanced Lateral Tuning"),
+      header_subtitle=tr_noop("Adjust actuator delay, steer ratio, Kp, friction, and neural network feedforward controllers."),
+      parent_toggle=pt_advanced,
+      panel_style=PANEL_STYLE,
+    )
+    self._wire_sub_panels()
+
+  def _on_pause_lateral_speed_clicked(self):
+    def on_speed_close(res, val):
+      if res == DialogResult.CONFIRM:
+        self._params.put_int("PauseLateralSpeed", int(val))
+        self._params.put_bool("QOLLateral", int(val) > 0)
+    current = self._params.get_int("PauseLateralSpeed")
+    gui_app.push_widget(AetherSliderDialog(
+      tr("Pause Lateral Below"), 0, 100, 1, current, on_speed_close,
+      unit=" mph", color=self.SLIDER_COLOR))
+
+  def _get_resume_delay_display(self) -> str:
+    val = self._params.get_float("LateralResumeDelay")
+    if val == 0.0:
+      return tr("Off")
+    return f"{val:.1f}s"
+
+  def _get_lane_change_delay_display(self) -> str:
+    val = self._params.get_float("LaneChangeTime")
+    if val == 0.0:
+      return tr("Instant")
+    return f"{val:.1f}s"
+
+  def _get_lane_change_smoothing_display(self) -> str:
+    val = self._params.get_int("LaneChangeSmoothing")
+    if val == 0 or val == 10:
+      return tr("Stock")
+    return str(val)
+
+  def _show_lane_smoothing(self):
     def on_close(res, val):
       if res == DialogResult.CONFIRM:
         self._params.put_int("LaneChangeSmoothing", int(val))
     current = self._params.get_int("LaneChangeSmoothing") if self._params.get_int("LaneChangeSmoothing") > 0 else 10
-    gui_app.set_modal_overlay(AetherSliderDialog(tr("Lane Change Smoothing"), 1, 10, 1, current, on_close, color=PANEL_STYLE.accent))
+    gui_app.push_widget(AetherSliderDialog(tr("Lane Change Smoothing"), 1, 10, 1, current, on_close,
+                                            color=self.SLIDER_COLOR))

@@ -99,7 +99,7 @@ Params::Params(const std::string &path, bool memory) {
   if (memory) {
     params_folder = Path::shm_path() + "/params";
   } else {
-    cache_path = "/cache/params" + params_prefix + "/";
+    cache_path = Path::params_cache() + params_prefix + "/";
     params_folder = path;
   }
   params_path = ensure_params_path(params_prefix, params_folder);
@@ -307,6 +307,10 @@ void Params::asyncWriteThread() {
 // StarPilot variables
 int Params::getTuningLevel(const std::string &key) {
   return keys[key].tuning_level;
+}
+
+ParamSettingsTier Params::getSettingsTier(const std::string &key) {
+  return keys[key].settings_tier;
 }
 
 std::optional<std::string> Params::getStockValue(const std::string &key) {

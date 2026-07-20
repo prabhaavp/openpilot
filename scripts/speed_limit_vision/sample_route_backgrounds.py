@@ -10,9 +10,9 @@ import cv2
 if __package__ in (None, ""):
   import sys
   sys.path.insert(0, str(Path(__file__).resolve().parent))
-  from common import DEFAULT_WORKSPACE, ensure_dir, resolve_workspace  # type: ignore
+  from common import DEFAULT_WORKSPACE, ensure_dir, resolve_workspace, source_video_fps  # type: ignore  # noqa: TID251
 else:
-  from .common import DEFAULT_WORKSPACE, ensure_dir, resolve_workspace
+  from .common import DEFAULT_WORKSPACE, ensure_dir, resolve_workspace, source_video_fps
 
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -49,7 +49,7 @@ def sample_images(source_files: list[Path], output_dir: Path, max_per_file: int)
 
 def sample_video(video_path: Path, output_dir: Path, seconds_between_frames: float, max_frames: int):
   cap = cv2.VideoCapture(str(video_path))
-  fps = cap.get(cv2.CAP_PROP_FPS) or 20.0
+  fps = source_video_fps(video_path, cap.get(cv2.CAP_PROP_FPS))
   total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
   frame_step = max(int(round(seconds_between_frames * fps)), 1)
   frame_indices = range(0, total_frames if total_frames > 0 else frame_step * max_frames, frame_step)

@@ -33,6 +33,13 @@ AUTO_HOLD_REGEN_RELEASE_COOLDOWN_S = 1.0
 
 BUTTONS_DICT = {CruiseButtons.RES_ACCEL: ButtonType.accelCruise, CruiseButtons.DECEL_SET: ButtonType.decelCruise,
                 CruiseButtons.MAIN: ButtonType.mainCruise, CruiseButtons.CANCEL: ButtonType.cancel}
+HARD_BUTTONS_DICT = {CruiseButtons.RES_ACCEL: ButtonType.accelCruise, CruiseButtons.DECEL_SET: ButtonType.decelCruise}
+NORMAL_CRUISE_BUTTONS = (CruiseButtons.RES_ACCEL, CruiseButtons.DECEL_SET)
+
+
+def get_hard_cruise_buttons(steering_button_msg: dict) -> int:
+  return steering_button_msg.get("ACCButtonsHard", CruiseButtons.INIT)
+
 
 GearShifter = structs.CarState.GearShifter
 BOLT_GEN1_CANCEL_PERSONALITY_CARS = {
@@ -43,6 +50,19 @@ BOLT_CANCEL_BUTTON_CARS = BOLT_GEN1_CANCEL_PERSONALITY_CARS | {
   CAR.CHEVROLET_BOLT_ACC_2022_2023_PEDAL,
   CAR.CHEVROLET_BOLT_CC_2022_2023,
 }
+
+
+def update_auto_hold_drive_timers(in_drive_for_hold: bool, moving_for_hold: bool,
+                                  auto_hold_drive_time: float, one_pedal_drive_time: float) -> tuple[float, float]:
+  if in_drive_for_hold:
+    if moving_for_hold:
+      auto_hold_drive_time = min(auto_hold_drive_time + DT_CTRL, AUTO_HOLD_MIN_DRIVE_TIME_S)
+      one_pedal_drive_time = min(one_pedal_drive_time + DT_CTRL, AUTO_HOLD_MIN_DRIVE_TIME_S)
+  else:
+    auto_hold_drive_time = 0.0
+    one_pedal_drive_time = 0.0
+
+  return auto_hold_drive_time, one_pedal_drive_time
 
 
 class CarState(CarStateBase):
@@ -64,11 +84,14 @@ class CarState(CarStateBase):
 
     self.prev_distance_button = 0
     self.distance_button = 0
+    self.hard_cruise_buttons = CruiseButtons.INIT
+    self.force_reset_cruise_buttons = False
 
     self.single_pedal_mode = False
     self.auto_hold_armed = False
     self.auto_hold_engaged = False
     self.auto_hold_drive_time = 0.0
+    self.one_pedal_drive_time = 0.0
     self.auto_hold_fault_suppression_timer = 0.0
     self.regen_release_timer = 0.0
     self.user_regen_paddle_pressed = False
@@ -81,12 +104,6 @@ class CarState(CarStateBase):
     self.lkas_enabled = 0
     self.pcm_acc_status = AccState.OFF
     self.stock_fcw_alert = 0
-    self.stock_acc_cruise_state = 0
-    self.stock_acc_lead_car = 0
-    self.stock_acc_resume_button = 0
-    self.stock_acc_speed_setpoint_kph = 0.0
-    self.stock_acc_gap_level = 0
-    self.stock_acc_cmd_active = 0
 
   def update_button_enable(self, buttonEvents: list[structs.CarState.ButtonEvent]):
     if not self.CP.pcmCruise:
@@ -119,21 +136,36 @@ class CarState(CarStateBase):
     sdgm_non_volt = self.CP.carFingerprint in SDGM_CAR and self.CP.carFingerprint not in kaofui_state_cars
 
     prev_cruise_buttons = self.cruise_buttons
+    prev_hard_cruise_buttons = self.hard_cruise_buttons
     prev_distance_button = self.distance_button
     if not sdgm_non_volt:
-      self.cruise_buttons = pt_cp.vl["ASCMSteeringButton"]["ACCButtons"]
-      self.distance_button = pt_cp.vl["ASCMSteeringButton"]["DistanceButton"]
-      self.buttons_counter = pt_cp.vl["ASCMSteeringButton"]["RollingCounter"]
-      self.steering_button_checksum = pt_cp.vl["ASCMSteeringButton"]["SteeringButtonChecksum"]
+      steering_button_msg = pt_cp.vl["ASCMSteeringButton"]
+      self.cruise_buttons = steering_button_msg["ACCButtons"]
+      self.hard_cruise_buttons = get_hard_cruise_buttons(steering_button_msg)
+      self.distance_button = steering_button_msg["DistanceButton"]
+      self.buttons_counter = steering_button_msg["RollingCounter"]
+      self.steering_button_checksum = steering_button_msg["SteeringButtonChecksum"]
       self.steering_button_ts_nanos = pt_cp.ts_nanos["ASCMSteeringButton"]["ACCButtons"]
-      acc_always_one = pt_cp.vl["ASCMSteeringButton"]["ACCAlwaysOne"]
-      acc_hidden_bit = pt_cp.vl["ASCMSteeringButton"].get("ACCHiddenBit", 0)
+      acc_always_one = steering_button_msg["ACCAlwaysOne"]
+      acc_hidden_bit = steering_button_msg.get("ACCHiddenBit", 0)
       self.steering_button_prefix = (int(acc_always_one) & 1) | ((int(acc_hidden_bit) & 1) << 6)
     else:
-      self.cruise_buttons = cam_cp.vl["ASCMSteeringButton"]["ACCButtons"]
-      self.distance_button = cam_cp.vl["ASCMSteeringButton"]["DistanceButton"]
-      self.buttons_counter = cam_cp.vl["ASCMSteeringButton"]["RollingCounter"]
+      steering_button_msg = cam_cp.vl["ASCMSteeringButton"]
+      self.cruise_buttons = steering_button_msg["ACCButtons"]
+      self.hard_cruise_buttons = get_hard_cruise_buttons(steering_button_msg)
+      self.distance_button = steering_button_msg["DistanceButton"]
+      self.buttons_counter = steering_button_msg["RollingCounter"]
       self.steering_button_ts_nanos = cam_cp.ts_nanos["ASCMSteeringButton"]["ACCButtons"]
+
+    # A GM hard press keeps the normal cruise button signal active too. Suppress
+    # the normal button until the wheel reports a different normal state.
+    if self.hard_cruise_buttons != CruiseButtons.INIT and self.cruise_buttons in NORMAL_CRUISE_BUTTONS:
+      self.force_reset_cruise_buttons = True
+    if self.force_reset_cruise_buttons and self.cruise_buttons in NORMAL_CRUISE_BUTTONS:
+      self.cruise_buttons = CruiseButtons.UNPRESS
+    elif self.force_reset_cruise_buttons and self.cruise_buttons not in NORMAL_CRUISE_BUTTONS:
+      self.force_reset_cruise_buttons = False
+
     self.pscm_status = copy.copy(pt_cp.vl["PSCMStatus"])
     self.moving_backward = (pt_cp.vl["EBCMWheelSpdRear"]["RLWheelDir"] == 2) or (pt_cp.vl["EBCMWheelSpdRear"]["RRWheelDir"] == 2)
 
@@ -178,7 +210,10 @@ class CarState(CarStateBase):
       ret.brakePressed = ret.brake >= VOLT_EBCM_BRAKE_PRESSED_THRESHOLD
     elif self.CP.carFingerprint in {CAR.CHEVROLET_MALIBU_CC} or (self.CP.carFingerprint == CAR.CHEVROLET_BLAZER and not no_accel_pos):
       ret.brakePressed = ret.brake >= 8
-    elif (self.CP.flags & GMFlags.FORCE_BRAKE_C9.value) or ((self.CP.networkLocation == NetworkLocation.fwdCamera) and (self.CP.carFingerprint != CAR.CHEVROLET_BLAZER)):
+    elif (self.CP.flags & GMFlags.FORCE_BRAKE_C9.value) or (
+      self.CP.networkLocation == NetworkLocation.fwdCamera and
+      self.CP.carFingerprint not in (SDGM_CAR | ASCM_INT | {CAR.CHEVROLET_BLAZER})
+    ):
       ret.brakePressed = pt_cp.vl["ECMEngineStatus"]["BrakePressed"] != 0
     else:
       # Some Volt 2016-17 have loose brake pedal push rod retainers which causes the ECM to believe
@@ -189,13 +224,10 @@ class CarState(CarStateBase):
       ret.brakePressed = ret.brake >= analog_thresh
 
     in_drive_for_hold = ret.gearShifter in (GearShifter.drive, GearShifter.low, GearShifter.manumatic)
-    if in_drive_for_hold:
-      if ret.brakePressed:
-        self.auto_hold_drive_time = AUTO_HOLD_MIN_DRIVE_TIME_S
-      else:
-        self.auto_hold_drive_time = min(self.auto_hold_drive_time + DT_CTRL, AUTO_HOLD_MIN_DRIVE_TIME_S)
-    else:
-      self.auto_hold_drive_time = 0.0
+    self.auto_hold_drive_time, self.one_pedal_drive_time = update_auto_hold_drive_timers(
+      in_drive_for_hold, ret.vEgo > 0.1, self.auto_hold_drive_time, self.one_pedal_drive_time
+    )
+    if not in_drive_for_hold:
       self.auto_hold_armed = False
       self.auto_hold_engaged = False
 
@@ -280,12 +312,6 @@ class CarState(CarStateBase):
         acc_dashboard_status = cam_cp.vl["ASCMActiveCruiseControlStatus"]
         if self.CP.carFingerprint not in CC_ONLY_CAR:
           ret.cruiseState.speed = acc_dashboard_status["ACCSpeedSetpoint"] * CV.KPH_TO_MS
-        self.stock_acc_cruise_state = int(acc_dashboard_status["ACCCruiseState"])
-        self.stock_acc_lead_car = int(acc_dashboard_status["ACCLeadCar"])
-        self.stock_acc_resume_button = int(acc_dashboard_status["ACCResumeButton"])
-        self.stock_acc_speed_setpoint_kph = float(acc_dashboard_status["ACCSpeedSetpoint"])
-        self.stock_acc_gap_level = int(acc_dashboard_status["ACCGapLevel"])
-        self.stock_acc_cmd_active = int(acc_dashboard_status["ACCCmdActive"])
         # Preserve the stock camera FCW level from 0x370 so the controller can
         # replay it when that message is blocked and spoofed by openpilot long.
         self.stock_fcw_alert = int(acc_dashboard_status["FCWAlert"])
@@ -374,19 +400,26 @@ class CarState(CarStateBase):
     lkas_events = [] if (suppress_malibu_side_buttons or suppress_bolt_cancel_lkas) else create_button_events(
       self.lkas_enabled, self.lkas_previously_enabled, {1: ButtonType.lkas}
     )
+    hard_cruise_events = create_button_events(
+      self.hard_cruise_buttons, prev_hard_cruise_buttons, HARD_BUTTONS_DICT, unpressed_btn=CruiseButtons.INIT
+    )
 
     # Don't add events if transitioning from INIT, unless it's to an actual button.
-    if self.cruise_buttons != CruiseButtons.UNPRESS or prev_cruise_buttons != CruiseButtons.INIT:
+    if (self.cruise_buttons != CruiseButtons.UNPRESS or prev_cruise_buttons != CruiseButtons.INIT or
+        self.hard_cruise_buttons != CruiseButtons.INIT or prev_hard_cruise_buttons != CruiseButtons.INIT):
       ret.buttonEvents = [
         *cruise_events,
         *distance_events,
         *lkas_events,
+        *hard_cruise_events,
       ]
 
     if ret.vEgo < self.CP.minSteerSpeed:
       ret.lowSpeedAlert = True
 
     fp_ret = custom.StarPilotCarState.new_message()
+    fp_ret.accelHardCruise = self.hard_cruise_buttons == CruiseButtons.RES_ACCEL or prev_hard_cruise_buttons == CruiseButtons.RES_ACCEL
+    fp_ret.decelHardCruise = self.hard_cruise_buttons == CruiseButtons.DECEL_SET or prev_hard_cruise_buttons == CruiseButtons.DECEL_SET
     if bolt_cancel_button and self.cruise_buttons == CruiseButtons.CANCEL:
       fp_ret.cancelPressed = True
     fp_ret.sportGear = pt_cp.vl["SportMode"]["SportMode"] == 1

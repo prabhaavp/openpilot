@@ -16,7 +16,6 @@ from openpilot.starpilot.common.accel_profile import (
   normalize_deceleration_profile,
 )
 from openpilot.starpilot.controls.lib.starpilot_vcruise import get_active_slc_control_target
-from openpilot.starpilot.common.starpilot_variables import CITY_SPEED_LIMIT
 
 def cubic_interp(x, xp, fp):
      """Cubic interpolation using NumPy's native operations for speed."""
@@ -88,12 +87,6 @@ def get_max_accel_standard(v_ego, ev_tuning=True, truck_tuning=False):
 def get_max_accel_custom(v_ego, custom_curve, acceleration_profile, ev_tuning=True, truck_tuning=False):
   curve_values = coerce_custom_accel_profile_values(custom_curve, acceleration_profile, ev_tuning, truck_tuning)
   return interpolate_accel_profile(v_ego, curve_values)
-
-def get_max_accel_low_speeds(max_accel, v_cruise):
-  return float(akima_interp(v_cruise, [0., CITY_SPEED_LIMIT / 2, CITY_SPEED_LIMIT], [max_accel / 4, max_accel / 2, max_accel]))
-
-def get_max_accel_ramp_off(max_accel, v_cruise, v_ego):
-  return float(akima_interp(v_cruise - v_ego, [0., 1., 5., 10.], [0., 0.5, 1.0, max_accel]))
 
 def get_max_allowed_accel(v_ego, ev_tuning=True, truck_tuning=False):
   return float(get_profile_max_allowed_accel(v_ego, ev_tuning, truck_tuning))
@@ -172,10 +165,6 @@ class StarPilotAcceleration:
         self.max_accel = get_max_allowed_accel(v_ego, ev_tuning, truck_tuning)
       else:
         self.max_accel = get_max_accel_standard(v_ego, ev_tuning, truck_tuning)
-
-    if starpilot_toggles.human_acceleration:
-      self.max_accel = min(get_max_accel_low_speeds(self.max_accel, self.starpilot_planner.v_cruise), self.max_accel)
-      self.max_accel = min(get_max_accel_ramp_off(self.max_accel, self.starpilot_planner.v_cruise, v_ego), self.max_accel)
 
     if self.starpilot_planner.starpilot_weather.weather_id != 0:
       self.max_accel -= self.max_accel * self.starpilot_planner.starpilot_weather.reduce_acceleration

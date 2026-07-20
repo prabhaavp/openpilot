@@ -23,6 +23,7 @@ TEMP_STEER_FAULTS = (0, 9, 11, 21, 25)
 # - lka/lta msg drop out: 3 (recoverable)
 # - prolonged high driver torque: 17 (permanent)
 PERM_STEER_FAULTS = (3, 17)
+LKAS_BUTTON_CAR = TSS2_CAR | {CAR.TOYOTA_PRIUS}
 
 
 # Traffic signals for Speed Limit Controller - Credit goes to the DragonPilot team!
@@ -41,6 +42,13 @@ def calculate_speed_limit(cp_cam):
 def calculate_interceptor_gas_pressed(cp) -> bool:
   interceptor_gas = (cp.vl["GAS_SENSOR"]["INTERCEPTOR_GAS"] + cp.vl["GAS_SENSOR"]["INTERCEPTOR_GAS2"]) / 2
   return interceptor_gas > 805
+
+
+def create_lkas_button_events(lkas_button: int, prev_lkas_button: int) -> list[structs.CarState.ButtonEvent]:
+  if lkas_button != 0 and lkas_button != prev_lkas_button:
+    return (create_button_events(1, 0, {1: ButtonType.lkas}) +
+            create_button_events(0, 1, {1: ButtonType.lkas}))
+  return []
 
 
 class CarState(CarStateBase):
@@ -80,13 +88,16 @@ class CarState(CarStateBase):
     self.has_can_filter = self.FPCP.flags & ToyotaStarPilotFlags.RADAR_CAN_FILTER.value
     self.has_SDSU = self.FPCP.flags & ToyotaStarPilotFlags.SMART_DSU.value
     self.has_ZSS = self.FPCP.flags & ToyotaStarPilotFlags.ZSS.value
+    self.auto_brake_hold = bool(self.CP.flags & ToyotaFlags.AUTO_BRAKE_HOLD.value)
+    self.pre_collision_2 = {}
 
   def update(self, can_parsers, starpilot_toggles) -> structs.CarState:
     cp = can_parsers[Bus.pt]
     cp_cam = can_parsers[Bus.cam]
 
     ret = structs.CarState()
-    cp_acc = cp_cam if self.CP.carFingerprint in (TSS2_CAR - RADAR_ACC_CAR) else cp
+    dsu_bypass = bool(self.CP.flags & ToyotaFlags.DSU_BYPASS.value)
+    cp_acc = cp_cam if self.CP.carFingerprint in (TSS2_CAR - RADAR_ACC_CAR) or dsu_bypass else cp
 
     if not self.CP.flags & ToyotaFlags.SECOC.value:
       self.gvc = cp.vl["VSC1S07"]["GVC"]
@@ -178,7 +189,7 @@ class CarState(CarStateBase):
       conversion_factor = CV.KPH_TO_MS if is_metric else CV.MPH_TO_MS
       ret.cruiseState.speedCluster = cluster_set_speed * conversion_factor
 
-    if self.CP.carFingerprint in TSS2_CAR and not self.CP.flags & ToyotaFlags.DISABLE_RADAR.value:
+    if dsu_bypass or (self.CP.carFingerprint in TSS2_CAR and not self.CP.flags & ToyotaFlags.DISABLE_RADAR.value):
       # smartDSU can intercept ACC_CONTROL, so don't require it when it's no
       # longer forwarded on the PT bus.
       if not self.has_SDSU:
@@ -211,20 +222,19 @@ class CarState(CarStateBase):
     if self.CP.carFingerprint != CAR.TOYOTA_PRIUS_V:
       self.lkas_hud = copy.copy(cp_cam.vl["LKAS_HUD"])
 
+    if self.auto_brake_hold:
+      self.pre_collision_2 = copy.copy(cp_cam.vl["PRE_COLLISION_2"])
+
     if self.CP.carFingerprint not in UNSUPPORTED_DSU_CAR:
       self.pcm_follow_distance = cp.vl["PCM_CRUISE_2"]["PCM_FOLLOW_DISTANCE"]
 
     buttonEvents = []
-    if self.CP.carFingerprint in TSS2_CAR:
-      # lkas button is wired to the camera
+    if self.CP.carFingerprint in LKAS_BUTTON_CAR:
       prev_lkas_button = self.lkas_button
       self.lkas_button = cp_cam.vl["LKAS_HUD"]["LDA_ON_MESSAGE"]
+      buttonEvents += create_lkas_button_events(self.lkas_button, prev_lkas_button)
 
-      # Cycles between 1 and 2 when pressing the button, then rests back at 0 after ~3s
-      if self.lkas_button != 0 and self.lkas_button != prev_lkas_button:
-        buttonEvents.extend(create_button_events(1, 0, {1: ButtonType.lkas}) +
-                            create_button_events(0, 1, {1: ButtonType.lkas}))
-
+    if self.CP.carFingerprint in TSS2_CAR:
       if self.CP.carFingerprint not in (RADAR_ACC_CAR | SECOC_CAR):
         # distance button is wired to the ACC module (camera or radar)
         prev_distance_button = self.distance_button

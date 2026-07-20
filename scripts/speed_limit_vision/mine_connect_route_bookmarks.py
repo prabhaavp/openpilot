@@ -16,7 +16,7 @@ import starpilot.system.speed_limit_vision as slv
 if __package__ in (None, ""):
   import sys
   sys.path.insert(0, str(Path(__file__).resolve().parent))
-  from common import ensure_dir, preferred_clip_root, resolve_workspace  # type: ignore
+  from common import ensure_dir, preferred_clip_root, resolve_workspace  # type: ignore  # noqa: TID251
   from evaluate_bookmark_leadins import BookmarkWindow  # type: ignore
   from import_bookmark_leadins import extract_window_frames, write_contact_sheet  # type: ignore
   from localize_bookmark_signs import configure_models, iter_context_frames, score_frame  # type: ignore
@@ -45,6 +45,7 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--search-after", type=float, default=1.0, help="Seconds after each bookmark to scan for the most sign-like frame.")
   parser.add_argument("--localize-sample-every", type=float, default=0.25, help="Seconds between frames while searching for the best sign candidate.")
   parser.add_argument("--top-k", type=int, default=1, help="Number of localized candidates to keep per bookmark.")
+  parser.add_argument("--model-only", action="store_true", help="Match the production detector/classifier path without crop OCR.")
   parser.add_argument("--overwrite", action="store_true", help="Overwrite any existing outputs.")
   return parser.parse_args()
 
@@ -73,13 +74,15 @@ def load_route_bookmarks(clip_root: Path, log_id: str) -> list[dict]:
   route_start_monotime = None
   raw_events: list[tuple[float, str]] = []
   for segment_dir in segment_dirs:
-    rlog_path = segment_dir / "rlog.zst"
-    if not rlog_path.exists():
-      rlog_path = segment_dir / "rlog.bz2"
-    if not rlog_path.exists():
+    log_path = next((segment_dir / name for name in ("rlog.zst", "rlog.bz2", "qlog.zst", "qlog.bz2") if (segment_dir / name).exists()), None)
+    if log_path is None:
       continue
 
-    events = list(log.Event.read_multiple_bytes(read_log_bytes(rlog_path)))
+    try:
+      events = list(log.Event.read_multiple_bytes(read_log_bytes(log_path)))
+    except Exception as exc:
+      print(f"{segment_dir.name}: skipping unreadable log {log_path.name}: {exc}")
+      continue
     if not events:
       continue
     if route_start_monotime is None:
@@ -99,6 +102,8 @@ def load_route_bookmarks(clip_root: Path, log_id: str) -> list[dict]:
       if event_type == "userBookmark":
         deduped[-1]["event_type"] = event_type
         deduped[-1]["route_time_s"] = route_time_s
+        deduped[-1]["segment"] = max(int(route_time_s // 60.0), 0)
+        deduped[-1]["segment_offset_s"] = route_time_s - deduped[-1]["segment"] * 60.0
       continue
 
     segment = max(int(route_time_s // 60.0), 0)
@@ -121,6 +126,8 @@ def write_localized_manifest(path: Path, rows: list[dict]) -> None:
       "route",
       "segment",
       "relative_time_s",
+      "source_segment",
+      "source_time_s",
       "source_video_path",
       "score",
       "proposal_confidence",
@@ -216,20 +223,22 @@ def main() -> int:
         write_contact_sheet(contact_sheet_path, contact_sheet_frames, contact_sheet_labels, args.overwrite)
 
       ranked = []
-      for relative_time_s, source_video_path, _, frame_bgr in iter_context_frames(
+      for relative_time_s, source_video_path, source_time_s, frame_bgr in iter_context_frames(
         clip_root,
         window,
         args.search_before,
         args.search_after,
         args.localize_sample_every,
       ):
-        scored = score_frame(daemon, frame_bgr)
+        scored = score_frame(daemon, frame_bgr, use_ocr=not args.model_only)
         if scored is None:
           continue
-        ranked.append((scored["score"], relative_time_s, source_video_path, frame_bgr, scored))
+        ranked.append((scored["score"], relative_time_s, source_video_path, source_time_s, frame_bgr, scored))
 
       ranked.sort(key=lambda item: item[0], reverse=True)
-      for rank_index, (_, relative_time_s, source_video_path, frame_bgr, scored) in enumerate(ranked[:max(args.top_k, 1)], start=1):
+      for rank_index, (_, relative_time_s, source_video_path, source_time_s, frame_bgr, scored) in enumerate(
+        ranked[:max(args.top_k, 1)], start=1,
+      ):
         x1, y1, x2, y2 = scored["box"]
         crop = frame_bgr[y1:y2, x1:x2]
         frame_name = f"{session_id}_bookmark_{bookmark_number:03d}_rank_{rank_index:02d}.jpg"
@@ -248,6 +257,8 @@ def main() -> int:
           "route": log_id,
           "segment": window.segment,
           "relative_time_s": f"{relative_time_s:.3f}",
+          "source_segment": window.segment - int(relative_time_s < 0.0),
+          "source_time_s": f"{source_time_s:.3f}",
           "source_video_path": str(source_video_path),
           "score": f"{scored['score']:.4f}",
           "proposal_confidence": f"{scored['proposal_confidence']:.4f}",

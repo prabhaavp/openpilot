@@ -13,7 +13,12 @@ import cv2
 
 import starpilot.system.speed_limit_vision as slv
 
-from scripts.speed_limit_vision import common
+if __package__ in (None, ""):
+  import sys
+  sys.path.insert(0, str(Path(__file__).resolve().parent))
+  import common  # type: ignore  # noqa: TID251
+else:
+  from . import common
 
 
 DEFAULT_SESSION_ROOT = Path(".tmp/live_drive_debug")
@@ -54,7 +59,7 @@ class LiveReplayDaemon(slv.SpeedLimitVisionDaemon):
     slv.time.monotonic = lambda now=now: now
     self.current_frame_bgr = frame_bgr
 
-    inference_interval = slv.FOLLOWUP_INFERENCE_INTERVAL if now < self.followup_until else slv.INFERENCE_INTERVAL
+    inference_interval = self._inference_interval(now)
     if now - self.last_inference_at < inference_interval:
       if self.published_speed_limit_mph > 0 and self._published_detection_stale(now):
         self._write_debug_event("stale_clear", reason="hold_timeout")
@@ -78,7 +83,7 @@ def parse_args():
   parser.add_argument("--session-route-map", type=Path, default=common.preferred_session_route_map_path(), help="JSON file mapping debug session ids to route log ids.")
   parser.add_argument("--models-dir", type=Path, help="Directory containing speed_limit_us_detector.onnx and speed_limit_us_value_classifier.onnx.")
   parser.add_argument("--lead-in", type=float, default=5.0, help="Seconds before each bookmark to replay.")
-  parser.add_argument("--sample-fps", type=float, help="Optional decode sample rate. Use 5 for faster bookmark sweeps that still match the live inference cadence.")
+  parser.add_argument("--sample-fps", type=float, help="Optional decode sample rate. Leave unset for the closest live-cadence replay; use 8+ for faster approximate sweeps.")
   parser.add_argument("--session", action="append", help="Optional session id filter. Repeat to run more than one.")
   parser.add_argument("--bookmark", action="append", type=int, help="Optional bookmark number filter within the selected sessions.")
   parser.add_argument("--json-out", type=Path, help="Optional path to write the summary JSON.")
@@ -133,7 +138,7 @@ def locate_window(route: str, event: dict, route_mtimes: dict[str, dict[int, int
 
 def iter_video_window(path: Path, start_s: float, end_s: float, sample_fps: float | None = None):
   capture = cv2.VideoCapture(str(path))
-  fps = capture.get(cv2.CAP_PROP_FPS) or 20.0
+  fps = common.source_video_fps(path, capture.get(cv2.CAP_PROP_FPS))
   start_frame = max(int(start_s * fps), 0)
   end_frame = max(int(end_s * fps), start_frame)
   frame_step = 1

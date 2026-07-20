@@ -14,6 +14,20 @@ LOGO_WIDTH = 750
 LOGO_HEIGHT = 770
 
 
+class StarPilotLogoWidget(Widget):
+  def __init__(self):
+    super().__init__()
+    self._logo_texture = gui_app.texture("images/StarPilotLogo.png", LOGO_WIDTH, LOGO_HEIGHT)
+
+  def _render(self, rect: rl.Rectangle):
+    scale = min(1.0, rect.width / self._logo_texture.width, rect.height / self._logo_texture.height)
+    width = self._logo_texture.width * scale
+    height = self._logo_texture.height * scale
+    x = rect.x + (rect.width - width) / 2
+    y = rect.y + (rect.height - height) / 2
+    rl.draw_texture_ex(self._logo_texture, rl.Vector2(x, y), 0.0, scale, rl.WHITE)
+
+
 class SetupWidget(Widget):
   def __init__(self):
     super().__init__()
@@ -60,12 +74,12 @@ class SetupWidget(Widget):
   def _show_pairing(self):
     if not system_time_valid():
       dlg = alert_dialog(tr("Please connect to Wi-Fi to complete initial pairing"))
-      gui_app.set_modal_overlay(dlg)
+      gui_app.push_widget(dlg)
       return
 
     if not self._pairing_dialog:
       self._pairing_dialog = PairingDialog()
-    gui_app.set_modal_overlay(self._pairing_dialog, lambda result: setattr(self, '_pairing_dialog', None))
+    gui_app.push_widget(self._pairing_dialog)
 
   def __del__(self):
     if self._pairing_dialog:

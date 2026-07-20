@@ -1,12 +1,12 @@
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from opendbc.can import CANParser
 from opendbc.can.dbc import DBC as DBCReader
 from opendbc.can.parser import get_raw_value
 from opendbc.car import Bus, structs
 from opendbc.car.interfaces import RadarInterfaceBase
-from opendbc.car.hyundai.values import CAR, DBC, HYUNDAI_MANDO_FRONT_RADAR_DBC, HYUNDAI_MRREVO14F_RADAR_DBC, \
+from opendbc.car.hyundai.values import CAR, DBC, HyundaiFlags, HYUNDAI_MANDO_FRONT_RADAR_DBC, HYUNDAI_MRREVO14F_RADAR_DBC, \
                                        HYUNDAI_MRR30_RADAR_DBC, HYUNDAI_MRR35_RADAR_DBC
 from openpilot.common.swaglog import cloudlog
 
@@ -29,6 +29,7 @@ class RadarTrackConfig:
   bus: int = 1
   frequency: int = 50
   parser_msg_count: int | None = None
+  expected_length: int | None = None
 
   @property
   def can_parser_msg_count(self) -> int:
@@ -38,18 +39,37 @@ class RadarTrackConfig:
 RADAR_TRACK_CONFIGS = {
   HYUNDAI_MANDO_FRONT_RADAR_DBC: RadarTrackConfig(RADAR_START_ADDR, RADAR_MSG_COUNT, "mando"),
   HYUNDAI_MRREVO14F_RADAR_DBC: RadarTrackConfig(MRREVO14F_RADAR_START_ADDR, MRREVO14F_RADAR_MSG_COUNT, "mrrevo14f"),
-  HYUNDAI_MRR30_RADAR_DBC: RadarTrackConfig(MRR30_RADAR_START_ADDR, MRR30_RADAR_MSG_COUNT, "mrr30", bus=0),
-  HYUNDAI_MRR35_RADAR_DBC: RadarTrackConfig(MRR35_RADAR_START_ADDR, MRR35_RADAR_MSG_COUNT, "mrr35", bus=0, frequency=20),
+  HYUNDAI_MRR30_RADAR_DBC: RadarTrackConfig(MRR30_RADAR_START_ADDR, MRR30_RADAR_MSG_COUNT, "mrr30", bus=0, expected_length=32),
+  HYUNDAI_MRR35_RADAR_DBC: RadarTrackConfig(MRR35_RADAR_START_ADDR, MRR35_RADAR_MSG_COUNT, "mrr35", bus=0, frequency=20, expected_length=24),
 }
 
 # POC for parsing corner radars: https://github.com/commaai/openpilot/pull/24221/
 
 
-def get_radar_track_config(car_fingerprint) -> RadarTrackConfig | None:
+def get_radar_track_config(car_fingerprint, flags: int = 0) -> RadarTrackConfig | None:
   radar_dbc = DBC[car_fingerprint].get(Bus.radar)
   if car_fingerprint == CAR.GENESIS_G90 and radar_dbc == HYUNDAI_MANDO_FRONT_RADAR_DBC:
     return RadarTrackConfig(RADAR_START_ADDR, G90_RADAR_MSG_COUNT, "mando", parser_msg_count=RADAR_MSG_COUNT)
-  return RADAR_TRACK_CONFIGS.get(radar_dbc)
+
+  radar_config = RADAR_TRACK_CONFIGS.get(radar_dbc)
+  if radar_config is None:
+    return None
+
+  if car_fingerprint == CAR.HYUNDAI_IONIQ_6 and flags & HyundaiFlags.CANFD_CAMERA_SCC:
+    return replace(radar_config, bus=1)
+
+  return radar_config
+
+
+def radar_tracks_available(radar_config: RadarTrackConfig | None, fingerprint) -> bool:
+  if radar_config is None:
+    return False
+
+  msg_len = fingerprint[radar_config.bus].get(radar_config.start_addr)
+  if msg_len is None:
+    return False
+
+  return radar_config.expected_length is None or msg_len == radar_config.expected_length
 
 
 def get_radar_can_parser(CP, radar_config):
@@ -64,7 +84,7 @@ def get_radar_can_parser(CP, radar_config):
 class RadarInterface(RadarInterfaceBase):
   def __init__(self, CP):
     super().__init__(CP)
-    self.radar_config = get_radar_track_config(CP.carFingerprint)
+    self.radar_config = get_radar_track_config(CP.carFingerprint, CP.flags)
     self.updated_messages = set()
     self.trigger_msg = (self.radar_config.start_addr + self.radar_config.can_parser_msg_count - 1
                         if self.radar_config is not None else RADAR_START_ADDR)

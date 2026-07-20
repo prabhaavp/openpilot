@@ -9,9 +9,10 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.selfdrive.ui.mici.onroad import SIDE_PANEL_WIDTH
 from openpilot.selfdrive.ui.mici.onroad.alert_renderer import AlertRenderer, ALERT_COLORS, AlertStatus
 from openpilot.selfdrive.ui.mici.onroad.driver_state import DriverStateRenderer
-from openpilot.selfdrive.ui.mici.onroad.hud_renderer import HudRenderer
+from openpilot.selfdrive.ui.mici.onroad.hud_renderer import HudRenderer, VISION_SPEED_LIMIT_PULSE_COLOR
 from openpilot.selfdrive.ui.mici.onroad.model_renderer import ModelRenderer
 from openpilot.selfdrive.ui.mici.onroad.confidence_ball import ConfidenceBall
+from openpilot.selfdrive.ui.mici.onroad.sidebar_widgets import MiciSidebarWidgets
 from openpilot.selfdrive.ui.mici.onroad.starpilot_status import (
   ENGAGED_COLOR,
   EXPERIMENTAL_COLOR,
@@ -20,7 +21,10 @@ from openpilot.selfdrive.ui.mici.onroad.starpilot_status import (
 )
 from openpilot.selfdrive.ui.mici.onroad.cameraview import CameraView
 from openpilot.selfdrive.ui.lib.starpilot_visuals import get_border_width
+from openpilot.starpilot.common.favorite_slots import load_favorite_slots, toggle_favorite_slot
 from openpilot.system.ui.lib.application import FontWeight, gui_app, MousePos, MouseEvent
+from openpilot.system.ui.lib.text_measure import measure_text_cached
+from openpilot.system.ui.lib.wrap_text import wrap_text
 from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.system.ui.widgets import Widget
 from openpilot.common.filter_simple import BounceFilter
@@ -40,6 +44,7 @@ CAMERA_VIEW_AUTO = 0
 CAMERA_VIEW_DRIVER = 1
 CAMERA_VIEW_STANDARD = 2
 CAMERA_VIEW_WIDE = 3
+CAMERA_VIEW_NONE = 4
 
 
 class BookmarkState(IntEnum):
@@ -144,6 +149,192 @@ class BookmarkIcon(Widget):
       icon_x = self.rect.x + self.rect.width - round(self._offset_filter.x)
       icon_y = self.rect.y + (self.rect.height - self._icon.height) / 2  # Vertically centered
       rl.draw_texture(self._icon, int(icon_x), int(icon_y), rl.WHITE)
+
+
+class FavoriteSlotsOverlay(Widget):
+  SLOT_COUNT = 3
+  MAX_TAP_TRAVEL = 24
+  COLOR_TRANSITION_SECONDS = 0.65
+  FADE_START_SECONDS = 2.0
+  FEEDBACK_DURATION_SECONDS = 3.0
+
+  def __init__(self):
+    super().__init__()
+    self._font = gui_app.font(FontWeight.SEMI_BOLD)
+    self._button_rects: list[tuple[int, rl.Rectangle]] = []
+    self._pressed_slot: int | None = None
+    self._press_pos: MousePos | None = None
+    self._max_tap_travel = 0.0
+    self._feedback_slot: int | None = None
+    self._feedback_started_at = -self.FEEDBACK_DURATION_SECONDS
+    self._feedback_value: bool | None = None
+    self._interacting = False
+
+  def interacting(self):
+    interacting, self._interacting = self._interacting, False
+    return interacting
+
+  def _visible_slots(self) -> list[tuple[int, dict]]:
+    visible = []
+    for index, slot in enumerate(load_favorite_slots(ui_state.params)):
+      if slot.get("enabled") and slot.get("show_onroad") and slot.get("key"):
+        visible.append((index, slot))
+    return visible
+
+  def _slot_rects(self, rect: rl.Rectangle, slots: list[tuple[int, dict]]) -> list[tuple[int, rl.Rectangle]]:
+    slot_width = rect.width / self.SLOT_COUNT
+    return [
+      (slot_index, rl.Rectangle(rect.x + slot_index * slot_width, rect.y, slot_width, rect.height))
+      for slot_index, _slot in slots
+    ]
+
+  def _fit_label(self, label: str, max_width: float, max_height: float) -> tuple[list[str], int]:
+    label = label or "Favorite"
+    lines = [label]
+    for font_size in range(30, 17, -1):
+      if any(measure_text_cached(self._font, word, font_size).x > max_width for word in label.split()):
+        continue
+      lines = wrap_text(self._font, label, font_size, int(max_width)) or [label]
+      line_height = font_size * 1.12
+      if len(lines) <= 3 and len(lines) * line_height <= max_height:
+        return lines, font_size
+    return lines[:3], 18
+
+  @staticmethod
+  def _ease_out_cubic(progress: float) -> float:
+    progress = float(np.clip(progress, 0.0, 1.0))
+    return 1.0 - (1.0 - progress) ** 3
+
+  @staticmethod
+  def _blend_color(start: rl.Color, end: rl.Color, progress: float, alpha: int) -> rl.Color:
+    progress = float(np.clip(progress, 0.0, 1.0))
+    return rl.Color(
+      round(start.r + (end.r - start.r) * progress),
+      round(start.g + (end.g - start.g) * progress),
+      round(start.b + (end.b - start.b) * progress),
+      alpha,
+    )
+
+  def _feedback_alpha(self, elapsed: float) -> float:
+    if elapsed < self.FADE_START_SECONDS:
+      return 1.0
+    fade_duration = self.FEEDBACK_DURATION_SECONDS - self.FADE_START_SECONDS
+    return float(np.clip(1.0 - (elapsed - self.FADE_START_SECONDS) / fade_duration, 0.0, 1.0))
+
+  def _draw_feedback(self, slot_rect: rl.Rectangle, slot: dict, elapsed: float, held: bool) -> None:
+    alpha_scale = 1.0 if held else self._feedback_alpha(elapsed)
+    if alpha_scale <= 0.0:
+      return
+
+    color_progress = self._ease_out_cubic(elapsed / self.COLOR_TRANSITION_SECONDS)
+    alpha = round(255 * alpha_scale)
+    accent = self._blend_color(VISION_SPEED_LIMIT_PULSE_COLOR, rl.Color(255, 255, 255, 255), color_progress, alpha)
+
+    panel_margin = 12
+    panel_width = max(96.0, slot_rect.width - 2 * panel_margin)
+    panel_height = min(132.0, slot_rect.height * 0.5)
+    panel_rect = rl.Rectangle(
+      slot_rect.x + (slot_rect.width - panel_width) / 2,
+      slot_rect.y + (slot_rect.height - panel_height) / 2,
+      panel_width,
+      panel_height,
+    )
+
+    # A restrained initial glow gives the same purple acknowledgement as the
+    # vision speed-limit pulse without leaving persistent controls onscreen.
+    glow_strength = (1.0 - color_progress) * alpha_scale
+    for expansion, opacity in ((8, 22), (4, 44)):
+      glow_rect = rl.Rectangle(
+        panel_rect.x - expansion,
+        panel_rect.y - expansion,
+        panel_rect.width + 2 * expansion,
+        panel_rect.height + 2 * expansion,
+      )
+      glow = rl.Color(
+        VISION_SPEED_LIMIT_PULSE_COLOR.r,
+        VISION_SPEED_LIMIT_PULSE_COLOR.g,
+        VISION_SPEED_LIMIT_PULSE_COLOR.b,
+        round(opacity * glow_strength),
+      )
+      rl.draw_rectangle_rounded_lines_ex(glow_rect, 0.16, 12, 2, glow)
+
+    rl.draw_rectangle_rounded(panel_rect, 0.16, 12, rl.Color(0, 0, 0, round(178 * alpha_scale)))
+    rl.draw_rectangle_rounded_lines_ex(panel_rect, 0.16, 12, 3, accent)
+
+    label = slot.get("label") or slot.get("key") or "Favorite"
+    state_text = "ON" if self._feedback_value else "OFF"
+    lines, font_size = self._fit_label(label, panel_rect.width - 20, panel_rect.height - 46)
+    line_height = font_size * 1.08
+    label_height = len(lines) * line_height
+    text_y = panel_rect.y + 12 + (panel_rect.height - 42 - label_height) / 2
+    for line in lines:
+      text_size = measure_text_cached(self._font, line, font_size)
+      text_x = panel_rect.x + (panel_rect.width - text_size.x) / 2
+      rl.draw_text_ex(self._font, line, rl.Vector2(text_x, text_y), font_size, 0, accent)
+      text_y += line_height
+
+    state_size = measure_text_cached(self._font, state_text, 20)
+    state_pos = rl.Vector2(panel_rect.x + (panel_rect.width - state_size.x) / 2, panel_rect.y + panel_rect.height - 30)
+    rl.draw_text_ex(self._font, state_text, state_pos, 20, 0, rl.Color(255, 255, 255, round(210 * alpha_scale)))
+
+  def _render(self, rect: rl.Rectangle):
+    visible_slots = self._visible_slots()
+    self._button_rects = self._slot_rects(rect, visible_slots)
+    slot_by_index = dict(visible_slots)
+
+    if self._feedback_slot not in slot_by_index:
+      self._feedback_slot = None
+      return
+
+    elapsed = max(0.0, rl.get_time() - self._feedback_started_at)
+    held = self._pressed_slot == self._feedback_slot
+    if not held and elapsed >= self.FEEDBACK_DURATION_SECONDS:
+      self._feedback_slot = None
+      return
+
+    feedback_rect = next(button_rect for slot_index, button_rect in self._button_rects if slot_index == self._feedback_slot)
+    self._draw_feedback(feedback_rect, slot_by_index[self._feedback_slot], elapsed, held)
+
+  def _slot_at(self, pos: MousePos) -> int | None:
+    for slot_index, rect in self._button_rects:
+      if rl.check_collision_point_rec(pos, rect):
+        return slot_index
+    return None
+
+  def _handle_mouse_press(self, mouse_pos: MousePos):
+    self._pressed_slot = self._slot_at(mouse_pos)
+    if self._pressed_slot is not None:
+      self._press_pos = mouse_pos
+      self._max_tap_travel = 0.0
+      self._feedback_slot = self._pressed_slot
+      self._feedback_started_at = rl.get_time()
+      slot = dict(self._visible_slots()).get(self._pressed_slot, {})
+      key = slot.get("key")
+      self._feedback_value = not ui_state.params.get_bool(key) if key else None
+      self._interacting = True
+
+  def _handle_mouse_event(self, mouse_event: MouseEvent):
+    if self._pressed_slot is None or self._press_pos is None:
+      return
+    travel = ((mouse_event.pos.x - self._press_pos.x) ** 2 + (mouse_event.pos.y - self._press_pos.y) ** 2) ** 0.5
+    self._max_tap_travel = max(self._max_tap_travel, travel)
+
+  def _handle_mouse_release(self, mouse_pos: MousePos):
+    released_slot = self._slot_at(mouse_pos)
+    valid_tap = (
+      self._pressed_slot is not None and
+      released_slot == self._pressed_slot and
+      self._max_tap_travel <= self.MAX_TAP_TRAVEL
+    )
+    if valid_tap and toggle_favorite_slot(self._pressed_slot, ui_state.params, ui_state.params_memory):
+      self._feedback_slot = self._pressed_slot
+      self._feedback_started_at = rl.get_time()
+      self._interacting = True
+    else:
+      self._feedback_slot = None
+    self._pressed_slot = None
+    self._press_pos = None
+    self._max_tap_travel = 0.0
 
 
 class MinSteerSpeedBanner(Widget):
@@ -362,6 +553,7 @@ class AugmentedRoadView(CameraView):
     self._last_click_time = 0.0
     self._reverse_driver_camera_frames = 0
     self._reverse_driver_camera_active = False
+    self._sidebar_personality_pressed = False
 
     # Bookmark icon with swipe gesture
     self._bookmark_icon = BookmarkIcon(bookmark_callback)
@@ -371,8 +563,10 @@ class AugmentedRoadView(CameraView):
     self._alert_renderer = AlertRenderer()
     self._driver_state_renderer = DriverStateRenderer()
     self._confidence_ball = ConfidenceBall()
+    self._sidebar_widgets = MiciSidebarWidgets(self._confidence_ball)
     self._min_steer_speed_banner = MinSteerSpeedBanner()
     self._standstill_timer = StandstillTimerOverlay()
+    self._favorite_slots = self._child(FavoriteSlotsOverlay())
     self._offroad_label = UnifiedLabel("start the car to\nuse openpilot", 54, FontWeight.DISPLAY,
                                        text_color=rl.Color(255, 255, 255, int(255 * 0.9)),
                                        alignment=rl.GuiTextAlignment.TEXT_ALIGN_CENTER,
@@ -413,14 +607,68 @@ class AugmentedRoadView(CameraView):
     else:
       self._offroad_label.set_text("start the car to\nuse openpilot")
 
+  def _sidebar_rect(self) -> rl.Rectangle:
+    return rl.Rectangle(
+      self.rect.x + self.rect.width - SIDE_PANEL_WIDTH,
+      self.rect.y,
+      SIDE_PANEL_WIDTH,
+      self.rect.height,
+    )
+
+  def _sidebar_widgets_visible(self) -> bool:
+    return not ui_state.params.get_bool("StockConfidenceBallWidget") or self._sidebar_widgets.demo_active
+
+  def _sidebar_personality_touch_enabled(self) -> bool:
+    return (
+      ui_state.started and
+      self._sidebar_widgets_visible() and
+      not ui_state.params.get_bool("SafeMode")
+    )
+
+  def _touch_in_sidebar(self, mouse_pos: MousePos) -> bool:
+    return rl.check_collision_point_rec(mouse_pos, self._sidebar_rect())
+
+  def _cycle_personality_profile(self) -> None:
+    current = ui_state.params.get_int("LongitudinalPersonality", return_default=True, default=int(log.LongitudinalPersonality.standard))
+    profiles = (
+      int(log.LongitudinalPersonality.aggressive),
+      int(log.LongitudinalPersonality.standard),
+      int(log.LongitudinalPersonality.relaxed),
+    )
+    try:
+      current_idx = profiles.index(int(current))
+    except ValueError:
+      current_idx = 1
+    next_personality = profiles[(current_idx + 1) % len(profiles)]
+    ui_state.params.put_int("LongitudinalPersonality", next_personality)
+    ui_state.personality = next_personality
+
+  def _handle_mouse_press(self, mouse_pos: MousePos):
+    self._sidebar_personality_pressed = (
+      self._sidebar_personality_touch_enabled() and
+      self._touch_in_sidebar(mouse_pos)
+    )
+    if not self._sidebar_personality_pressed:
+      super()._handle_mouse_press(mouse_pos)
+
   def _handle_mouse_release(self, mouse_pos: MousePos):
+    if self._sidebar_personality_pressed:
+      if self._sidebar_personality_touch_enabled() and self._touch_in_sidebar(mouse_pos):
+        self._cycle_personality_profile()
+      self._sidebar_personality_pressed = False
+      return
+
+    self._sidebar_personality_pressed = False
+
     # Don't trigger click callback if bookmark or HUD widgets consumed the tap.
-    if not self._bookmark_icon.interacting() and not self._hud_renderer.user_interacting():
+    if not self._bookmark_icon.interacting() and not self._hud_renderer.user_interacting() and not self._favorite_slots.interacting():
       super()._handle_mouse_release(mouse_pos)
 
   def _render(self, _):
     start_draw = time.monotonic()
-    self._switch_stream_if_needed(ui_state.sm)
+    camera_view = self._camera_view()
+    camera_view_none = camera_view == CAMERA_VIEW_NONE
+    self._switch_stream_if_needed(ui_state.sm, camera_view)
 
     # Update calibration before rendering
     self._update_calibration()
@@ -443,7 +691,10 @@ class AugmentedRoadView(CameraView):
     )
 
     # Render the base camera view
-    super()._render(self._content_rect)
+    if camera_view_none:
+      rl.draw_rectangle_rec(self._content_rect, rl.BLACK)
+    else:
+      super()._render(self._content_rect)
 
     waiting_for_controls = ui_state.started and not self._controls_ready()
     if waiting_for_controls:
@@ -462,39 +713,41 @@ class AugmentedRoadView(CameraView):
 
     in_reverse = self._is_in_reverse()
     is_driver_stream = self.stream_type == DRIVER_CAM
+    draw_road_overlays = not in_reverse and not is_driver_stream and not camera_view_none
+    draw_hud_controls = camera_view_none or (not in_reverse and not is_driver_stream)
     self._hud_renderer.prepare(self._content_rect)
 
     # Draw all UI overlays
-    if not in_reverse and not is_driver_stream:
+    if draw_road_overlays:
       self._model_renderer.render(self._content_rect)
 
     # Fade out bottom of overlays for looks
     rl.draw_texture_ex(self._fade_texture, rl.Vector2(self._content_rect.x, self._content_rect.y), 0.0, 1.0, rl.WHITE)
-    if not in_reverse and not is_driver_stream:
+    if draw_hud_controls:
       self._hud_renderer.render_background()
 
     alert_to_render, not_animating_out = self._alert_renderer.will_render()
 
     should_draw_dmoji = ui_state.is_onroad() and (
-      is_driver_stream or ((not in_reverse) and (not self._hud_renderer.drawing_top_icons()))
+      is_driver_stream or camera_view_none or ((not in_reverse) and (not self._hud_renderer.drawing_top_icons()))
     )
     self._driver_state_renderer.set_should_draw(should_draw_dmoji)
     self._driver_state_renderer.set_position(self._rect.x + 16, self._rect.y + 10)
-    if is_driver_stream or not in_reverse:
+    if camera_view_none or is_driver_stream or not in_reverse:
       self._driver_state_renderer.render()
 
-    self._hud_renderer.set_can_draw_top_icons((not in_reverse) and (not is_driver_stream) and (alert_to_render is None))
-    self._hud_renderer.set_wheel_critical_icon((not in_reverse) and (not is_driver_stream) and alert_to_render is not None and not not_animating_out and
+    self._hud_renderer.set_can_draw_top_icons(draw_hud_controls and (alert_to_render is None))
+    self._hud_renderer.set_wheel_critical_icon(draw_hud_controls and alert_to_render is not None and not not_animating_out and
                                                alert_to_render.visual_alert == car.CarControl.HUDControl.VisualAlert.steerRequired)
     # TODO: have alert renderer draw offroad mici label below
     if ui_state.started:
       self._alert_renderer.render(self._content_rect)
-    if not in_reverse and not is_driver_stream:
+    if draw_hud_controls:
       self._hud_renderer.render_foreground()
     rendered_standstill_timer = False
-    if not in_reverse and not is_driver_stream:
+    if draw_hud_controls:
       rendered_standstill_timer = self._standstill_timer.render(self._content_rect, in_reverse)
-    if not in_reverse and not is_driver_stream and not rendered_standstill_timer:
+    if draw_hud_controls and not rendered_standstill_timer:
       self._min_steer_speed_banner.render(self._content_rect)
 
     # End clipping region
@@ -502,9 +755,14 @@ class AugmentedRoadView(CameraView):
 
     # Custom UI extension point - add custom overlays here
     # Use self._content_rect for positioning within camera bounds
-    if not in_reverse and not is_driver_stream:
-      self._confidence_ball.render(self.rect)
-    if is_driver_stream or not in_reverse:
+    if draw_road_overlays:
+      if ui_state.params.get_bool("StockConfidenceBallWidget") and not self._sidebar_widgets.demo_active:
+        self._confidence_ball.render(self.rect)
+      else:
+        self._sidebar_widgets.render(self.rect)
+    if draw_hud_controls and (camera_view_none or is_driver_stream or not in_reverse):
+      self._favorite_slots.render(self._content_rect)
+    if camera_view_none or is_driver_stream or not in_reverse:
       self._draw_border()
 
     self._bookmark_icon.render(self.rect)
@@ -521,14 +779,22 @@ class AugmentedRoadView(CameraView):
 
   def _draw_border(self):
     border_size = self._get_border_width()
-    # Keep full border visible by drawing outside scissor with an inset rect.
+    # Keep the outer edge pinned to the camera bounds. Wider borders grow inward
+    # so they cannot paint over the fixed right-side widget column.
     border_rect = rl.Rectangle(
       self._content_rect.x + border_size / 2,
       self._content_rect.y + border_size / 2,
       self._content_rect.width - border_size,
       self._content_rect.height - border_size,
     )
+    rl.begin_scissor_mode(
+      int(self._content_rect.x),
+      int(self._content_rect.y),
+      int(self._content_rect.width),
+      int(self._content_rect.height),
+    )
     rl.draw_rectangle_rounded_lines_ex(border_rect, 0.12, 16, border_size, get_border_color(ui_state))
+    rl.end_scissor_mode()
 
   def _get_border_width(self) -> int:
     return get_border_width(8, ui_state.params)
@@ -555,16 +821,24 @@ class AugmentedRoadView(CameraView):
   def is_in_reverse(self) -> bool:
     return self._is_in_reverse()
 
-  def _switch_stream_if_needed(self, sm):
+  @staticmethod
+  def _camera_view() -> int:
+    camera_view = ui_state.params.get_int("CameraView", return_default=True, default=CAMERA_VIEW_WIDE)
+    if camera_view not in (CAMERA_VIEW_AUTO, CAMERA_VIEW_DRIVER, CAMERA_VIEW_STANDARD, CAMERA_VIEW_WIDE, CAMERA_VIEW_NONE):
+      return CAMERA_VIEW_WIDE
+    return camera_view
+
+  def _switch_stream_if_needed(self, sm, camera_view: int):
+    if camera_view == CAMERA_VIEW_NONE:
+      self._reverse_driver_camera_frames = 0
+      self._reverse_driver_camera_active = False
+      return
+
     if self._update_reverse_driver_camera_state():
       target = DRIVER_CAM
       if self.stream_type != target:
         self.switch_stream(target)
       return
-
-    camera_view = ui_state.params.get_int("CameraView", return_default=True, default=CAMERA_VIEW_WIDE)
-    if camera_view not in (CAMERA_VIEW_AUTO, CAMERA_VIEW_DRIVER, CAMERA_VIEW_STANDARD, CAMERA_VIEW_WIDE):
-      camera_view = CAMERA_VIEW_WIDE
 
     if camera_view == CAMERA_VIEW_DRIVER:
       target = DRIVER_CAM
@@ -612,7 +886,11 @@ class AugmentedRoadView(CameraView):
 
   def _calc_frame_matrix(self, rect: rl.Rectangle) -> np.ndarray:
     if self.stream_type == DRIVER_CAM:
-      return CameraView._calc_frame_matrix(self, rect)
+      base = CameraView._calc_frame_matrix(self, rect)
+      driver_view_ratio = 1.5
+      base[0, 0] *= driver_view_ratio
+      base[1, 1] *= driver_view_ratio
+      return base
 
     # Get camera configuration
     # TODO: cache with vEgo?

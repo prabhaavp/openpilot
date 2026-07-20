@@ -26,6 +26,14 @@ DEFAULT_SPEED_VALUES = (15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75)
 
 DETECTOR_EXPORT_NAME = "speed_limit_us_detector.onnx"
 CLASSIFIER_EXPORT_NAME = "speed_limit_us_value_classifier.onnx"
+COMMA_ROAD_CAMERA_FPS = 20.0
+
+
+def source_video_fps(video_path: str | Path, reported_fps: float) -> float:
+  # Raw comma HEVC streams have no timing metadata, so OpenCV invents 25 FPS.
+  if Path(video_path).name == "fcamera.hevc":
+    return COMMA_ROAD_CAMERA_FPS
+  return float(reported_fps) if reported_fps > 0.0 else COMMA_ROAD_CAMERA_FPS
 
 
 def resolve_workspace(path: str | Path | None) -> Path:

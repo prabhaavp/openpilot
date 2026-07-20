@@ -255,7 +255,9 @@ class Navigationd:
     all_maneuvers = payload.get("allManeuvers") or []
     next_maneuver = all_maneuvers[1] if len(all_maneuvers) > 1 and isinstance(all_maneuvers[1], dict) else {}
     active_lane_direction = ""
-    for lane in payload.get("lanes") or []:
+    active_lane_index = -1
+    lanes = payload.get("lanes") or []
+    for index, lane in enumerate(lanes):
       if not isinstance(lane, dict) or not bool(lane.get("active", False)):
         continue
       candidate = str(lane.get("activeDirection") or "")
@@ -263,13 +265,39 @@ class Navigationd:
         candidate = str((lane.get("directions") or [""])[0] or "")
       if candidate and candidate != "none":
         active_lane_direction = candidate
+        active_lane_index = index
         break
+
+    active_lane_side = ""
+    if active_lane_direction in ("slightLeft", "left", "sharpLeft"):
+      active_lane_side = "left"
+    elif active_lane_direction in ("slightRight", "right", "sharpRight"):
+      active_lane_side = "right"
+
+    same_side_lane_count = 0
+    active_lane_at_road_edge = False
+    has_shared_same_side_lane = False
+    if active_lane_side:
+      same_side_directions = {"slightLeft", "left", "sharpLeft"} if active_lane_side == "left" else {"slightRight", "right", "sharpRight"}
+      active_lane_at_road_edge = active_lane_index == 0 if active_lane_side == "left" else active_lane_index == len(lanes) - 1
+      for lane in lanes:
+        if not isinstance(lane, dict):
+          continue
+        directions = {str(direction) for direction in lane.get("directions") or [] if direction}
+        if directions & same_side_directions:
+          same_side_lane_count += 1
+          has_shared_same_side_lane |= len(directions - same_side_directions) > 0
 
     state = {
       "valid": True,
       "maneuverModifier": str(payload.get("maneuverModifier") or ""),
       "maneuverType": str(payload.get("maneuverType") or ""),
+      "laneCount": len(lanes),
       "activeLaneDirection": active_lane_direction,
+      "activeLaneIndex": active_lane_index,
+      "activeLaneAtRoadEdge": active_lane_at_road_edge,
+      "hasSharedSameSideLane": has_shared_same_side_lane,
+      "sameSideLaneCount": same_side_lane_count,
       "maneuverPrimaryText": str(payload.get("maneuverPrimaryText") or ""),
       "maneuverSecondaryText": str(payload.get("maneuverSecondaryText") or ""),
       "maneuverDistance": float(payload.get("maneuverDistance") or 0.0),

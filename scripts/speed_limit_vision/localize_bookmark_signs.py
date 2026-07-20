@@ -10,7 +10,12 @@ import cv2
 
 import starpilot.system.speed_limit_vision as slv
 
-from scripts.speed_limit_vision import common
+if __package__ in (None, ""):
+  import sys
+  sys.path.insert(0, str(Path(__file__).resolve().parent))
+  import common  # type: ignore  # noqa: TID251
+else:
+  from . import common
 from scripts.speed_limit_vision import evaluate_bookmark_leadins as ebl
 
 
@@ -22,7 +27,12 @@ def parse_args():
   parser.add_argument("--clip-root", type=Path, default=ebl.DEFAULT_CLIP_ROOT, help="Copied route clip root.")
   parser.add_argument("--qlog-mtimes", type=Path, default=ebl.DEFAULT_QLOG_MTIMES, help="Text file with '<qlog path> <mtime epoch>' lines.")
   parser.add_argument("--session-root", type=Path, default=ebl.DEFAULT_SESSION_ROOT, help="Directory containing debug session folders.")
-  parser.add_argument("--session-route-map", type=Path, default=common.preferred_session_route_map_path(), help="JSON file mapping debug session ids to route log ids.")
+  parser.add_argument(
+    "--session-route-map",
+    type=Path,
+    default=common.preferred_session_route_map_path(),
+    help="JSON file mapping debug session ids to route log ids.",
+  )
   parser.add_argument("--models-dir", type=Path, help="Directory containing speed_limit_us_detector.onnx and speed_limit_us_value_classifier.onnx.")
   parser.add_argument("--search-before", type=float, default=18.0, help="Seconds before the bookmark to scan.")
   parser.add_argument("--search-after", type=float, default=2.0, help="Seconds after the bookmark to scan.")
@@ -48,7 +58,7 @@ def configure_models(models_dir: Path | None):
 
 def iter_video_samples(clip_path: Path, start_s: float, end_s: float, sample_every: float):
   capture = cv2.VideoCapture(str(clip_path))
-  fps = capture.get(cv2.CAP_PROP_FPS) or 20.0
+  fps = common.source_video_fps(clip_path, capture.get(cv2.CAP_PROP_FPS))
   start_frame = max(int(start_s * fps), 0)
   end_frame = max(int(end_s * fps), start_frame)
 
@@ -100,7 +110,15 @@ def iter_context_frames(clip_root: Path, window: ebl.BookmarkWindow, search_befo
       yield relative_time_s, clip_path, source_time_s, frame_bgr
 
 
-def _score_expanded_candidate(daemon: slv.SpeedLimitVisionDaemon, frame_bgr, class_id: int, proposal_confidence: float, box, full_detection):
+def _score_expanded_candidate(
+  daemon: slv.SpeedLimitVisionDaemon,
+  frame_bgr,
+  class_id: int,
+  proposal_confidence: float,
+  box,
+  full_detection,
+  use_ocr: bool = True,
+):
   frame_height, frame_width = frame_bgr.shape[:2]
   x1, y1, x2, y2 = box
   box_width = x2 - x1
@@ -123,7 +141,7 @@ def _score_expanded_candidate(daemon: slv.SpeedLimitVisionDaemon, frame_bgr, cla
 
     is_regulatory = daemon._is_regulatory_speed_sign(sign_crop) or class_id == 2
     model_read = daemon._classify_speed_limit_from_model(sign_crop)
-    ocr_read = daemon._read_speed_limit_from_crop(sign_crop)
+    ocr_read = daemon._read_speed_limit_from_crop(sign_crop) if use_ocr else None
     if model_read is None and ocr_read is None:
       continue
 
@@ -132,9 +150,14 @@ def _score_expanded_candidate(daemon: slv.SpeedLimitVisionDaemon, frame_bgr, cla
       if read_result is None or read_result[0] not in slv.SCHOOL_ZONE_SPEED_VALUES:
         continue
     elif not is_regulatory:
-      if model_read is None or ocr_read is None or model_read[0] != ocr_read[0]:
+      if use_ocr:
+        if model_read is None or ocr_read is None or model_read[0] != ocr_read[0]:
+          continue
+        read_result = (model_read[0], min(model_read[1], ocr_read[1]))
+      elif model_read is None or model_read[1] < slv.DETECTOR_CLASSIFIER_TRUSTED_MODEL_MIN_READ_CONFIDENCE:
         continue
-      read_result = (model_read[0], min(model_read[1], ocr_read[1]))
+      else:
+        read_result = model_read
     else:
       if model_read is not None and ocr_read is not None and model_read[0] == ocr_read[0]:
         read_result = (model_read[0], max(model_read[1], ocr_read[1]))
@@ -169,7 +192,7 @@ def _score_expanded_candidate(daemon: slv.SpeedLimitVisionDaemon, frame_bgr, cla
   return best
 
 
-def score_frame(daemon: slv.SpeedLimitVisionDaemon, frame_bgr):
+def score_frame(daemon: slv.SpeedLimitVisionDaemon, frame_bgr, use_ocr: bool = True):
   full_detection = daemon._detect_sign(frame_bgr)
   best = None
 
@@ -177,7 +200,15 @@ def score_frame(daemon: slv.SpeedLimitVisionDaemon, frame_bgr):
     if class_id == 1:
       continue
 
-    candidate = _score_expanded_candidate(daemon, frame_bgr, class_id, proposal_confidence, (x1, y1, x2, y2), full_detection)
+    candidate = _score_expanded_candidate(
+      daemon,
+      frame_bgr,
+      class_id,
+      proposal_confidence,
+      (x1, y1, x2, y2),
+      full_detection,
+      use_ocr=use_ocr,
+    )
     if candidate is None:
       continue
     if best is None or candidate["score"] > best["score"]:
@@ -195,6 +226,8 @@ def write_manifest(rows: list[dict], path: Path):
       "route",
       "segment",
       "relative_time_s",
+      "source_segment",
+      "source_time_s",
       "source_video_path",
       "score",
       "proposal_confidence",
@@ -249,7 +282,9 @@ def main():
         ranked.append((scored["score"], relative_time_s, source_video_path, source_time_s, frame_bgr, scored))
 
       ranked.sort(key=lambda item: item[0], reverse=True)
-      for rank_index, (_, relative_time_s, source_video_path, _, frame_bgr, scored) in enumerate(ranked[:max(args.top_k, 1)], start=1):
+      for rank_index, (_, relative_time_s, source_video_path, source_time_s, frame_bgr, scored) in enumerate(
+        ranked[:max(args.top_k, 1)], start=1,
+      ):
         x1, y1, x2, y2 = scored["box"]
         crop = frame_bgr[y1:y2, x1:x2]
 
@@ -272,6 +307,8 @@ def main():
           "route": route,
           "segment": window.segment,
           "relative_time_s": f"{relative_time_s:.3f}",
+          "source_segment": window.segment - int(relative_time_s < 0.0),
+          "source_time_s": f"{source_time_s:.3f}",
           "source_video_path": str(source_video_path),
           "score": f"{scored['score']:.4f}",
           "proposal_confidence": f"{scored['proposal_confidence']:.4f}",

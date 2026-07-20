@@ -4,6 +4,7 @@ import json
 import platform
 import shutil
 import signal
+import socket
 import subprocess
 import tarfile
 import time
@@ -23,6 +24,8 @@ else:
 FRPC_VERSION = "0.67.0"
 FRPC_LOG = GALAXY_DIR / "frpc.log"
 AUTH_PORT = 8083
+GALAXY_WEB_HOST = "127.0.0.1"
+GALAXY_WEB_PORT = 8082
 BUNDLED_FRPC_DIR = Path(__file__).resolve().parent / "bin"
 
 process = None
@@ -92,6 +95,11 @@ def cleanup_frpc(*_):
     process = None
 
 
+def shutdown(*_):
+  cleanup_frpc()
+  raise SystemExit
+
+
 def get_arch_url():
   arch = platform.machine()
   system = platform.system()
@@ -133,6 +141,14 @@ def get_param_str(params, key):
   if isinstance(value, bytes):
     return value.decode("utf-8", errors="replace")
   return str(value or "")
+
+
+def local_galaxy_ready():
+  try:
+    with socket.create_connection((GALAXY_WEB_HOST, GALAXY_WEB_PORT), timeout=1.0):
+      return True
+  except OSError:
+    return False
 
 
 def setup_frpc():
@@ -182,8 +198,8 @@ def main():
   global process
   params = Params()
 
-  signal.signal(signal.SIGTERM, cleanup_frpc)
-  signal.signal(signal.SIGINT, cleanup_frpc)
+  signal.signal(signal.SIGTERM, shutdown)
+  signal.signal(signal.SIGINT, shutdown)
 
   dongle_id = get_param_str(params, "DongleId")
   while not dongle_id:
@@ -210,6 +226,11 @@ def main():
         if process is not None and slug == last_slug:
           print(f"Galaxy: frpc exited with code {process.returncode}. Restarting...")
 
+        if not local_galaxy_ready():
+          print(f"Galaxy: Waiting for web app on {GALAXY_WEB_HOST}:{GALAXY_WEB_PORT} before starting frpc tunnel...")
+          time.sleep(3)
+          continue
+
         print("Galaxy: Password set. Preparing frpc tunnel...")
         if not setup_frpc():
           print("Galaxy: FRPC setup failed. Retrying later...")
@@ -228,7 +249,7 @@ tls.enable = true
 poolCount = 2
 
 [[proxies]]
-name = "{slug}_pond"
+name = "{slug}_galaxy"
 type = "http"
 localIP = "127.0.0.1"
 localPort = 8082

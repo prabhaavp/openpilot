@@ -120,6 +120,12 @@ class UIState:
   def add_offroad_transition_callback(self, callback: Callable[[], None]):
     self._offroad_transition_callbacks.append(callback)
 
+  def remove_offroad_transition_callback(self, callback: Callable[[], None]):
+    try:
+      self._offroad_transition_callbacks.remove(callback)
+    except ValueError:
+      pass
+
   def add_engaged_transition_callback(self, callback: Callable[[], None]):
     self._engaged_transition_callbacks.append(callback)
 

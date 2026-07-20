@@ -9,7 +9,6 @@ from openpilot.common.basedir import BASEDIR
 from openpilot.starpilot.common.starpilot_variables import ACTIVE_THEME_PATH
 from openpilot.system.ui.lib.application import gui_app, FontWeight, MouseEvent, MousePos
 from openpilot.system.ui.lib.multilang import tr, tr_noop
-from openpilot.system.ui.lib.scroll_panel2 import GuiScrollPanel2
 from openpilot.system.ui.widgets import Widget, DialogResult
 from openpilot.system.ui.widgets.label import gui_label
 from openpilot.selfdrive.ui.ui_state import ui_state
@@ -18,55 +17,42 @@ from openpilot.selfdrive.ui.layouts.settings.starpilot.panel import _SettingsPag
 from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import (
   AETHER_LIST_METRICS,
   COMPACT_PANEL_METRICS,
+  AdjustorTogglesPanelView,
   AetherAdjustorRow,
   AetherListColors,
-  AetherScrollbar,
+  PanelManagerView,
+  SPACING,
   TileGrid,
-  ToggleTile,
-  panel_style_from_color,
-  _point_hits,
-  draw_action_pill,
+  TOGGLE_MIN_HEIGHT,
+  TOGGLE_ROW_HEIGHT,
+  DEFAULT_PANEL_STYLE,
+  point_hits,
   draw_list_group_shell,
-  draw_list_scroll_fades,
-  draw_section_header,
   draw_settings_panel_header,
-  init_list_panel,
   AetherSliderDialog,
+  SECTION_GAP,
+  GROUP_HEADER_HEIGHT,
+  GROUP_HEADER_GAP,
+  GROUP_HEADER_LINE_GAP,
+  draw_group_header,
 )
 
-PANEL_STYLE = panel_style_from_color("#E63956")
-SECTION_GAP = AETHER_LIST_METRICS.section_gap
-SECTION_HEADER_HEIGHT = AETHER_LIST_METRICS.section_header_height
-SECTION_HEADER_GAP = AETHER_LIST_METRICS.section_header_gap
-
-GROUP_HEADER_HEIGHT = 20
-GROUP_HEADER_GAP = 2
-GROUP_HAIRLINE_COLOR = rl.Color(255, 255, 255, 10)
-GROUP_HEADER_COLOR = rl.Color(255, 255, 255, 90)
-
+PANEL_STYLE = DEFAULT_PANEL_STYLE
 SOUNDS_PANEL_METRICS = replace(
   COMPACT_PANEL_METRICS,
-  outer_margin_y=14,
-  panel_padding_top=16,
-  panel_padding_bottom=14,
-  header_height=88,
+  header_height=0,
 )
 
 
-class SoundsManagerView(Widget):
+
+class SoundsManagerView(AdjustorTogglesPanelView):
+  METRICS = SOUNDS_PANEL_METRICS
+
   def __init__(self, controller: StarPilotSoundsLayout):
     super().__init__()
     self._controller = controller
-    self._pressed_target: str | None = None
-    self._adjustor_rows: dict[str, AetherAdjustorRow] = {}
-    self._can_click = True
     self._reset_rect = rl.Rectangle(0, 0, 0, 0)
 
-    self._scroll_panel = GuiScrollPanel2(horizontal=False)
-    self._scrollbar = AetherScrollbar()
-    self._content_height = 0.0
-    self._scroll_offset = 0.0
-    self._scroll_rect = rl.Rectangle(0, 0, 0, 0)
     self._tile_grid_h = 0.0
 
     self._init_adjustors()
@@ -79,30 +65,27 @@ class SoundsManagerView(Widget):
     )
 
   def _init_toggles(self):
-    self._toggle_grid = TileGrid(columns=2, padding=12)
+    if self.PANEL_STYLE.toggle_row_mode:
+      self._toggle_grid = TileGrid(columns=1, padding=SPACING.md, min_tile_height=TOGGLE_MIN_HEIGHT)
+    else:
+      self._toggle_grid = TileGrid(columns=2, padding=12, min_tile_height=130.0)
+    self._child(self._toggle_grid)
+    self._page_grid = self._toggle_grid
+
+    toggle_defs = []
     for key in self._controller.CUSTOM_ALERTS_KEYS:
       info = self._controller.ALERT_INFO[key]
-      tile = ToggleTile(
-        title=tr(info["title"]),
-        get_state=lambda k=key: self._controller._params.get_bool(k),
-        set_state=lambda state, k=key: self._controller._params.put_bool(k, state),
-        bg_color=PANEL_STYLE.accent,
-        desc=tr(info.get("subtitle", "")),
-        is_enabled=info.get("is_enabled"),
-        disabled_label=tr(info.get("disabled_label", "")) if info.get("disabled_label") else "",
-      )
-      self._toggle_grid.add_tile(tile)
-    self._child(self._toggle_grid)
+      toggle_defs.append({
+        "title": tr(info["title"]),
+        "subtitle": tr(info.get("subtitle", "")),
+        "get_state": lambda k=key: self._controller._params.get_bool(k),
+        "set_state": lambda state, k=key: self._controller._params.put_bool(k, state),
+        "is_enabled": info.get("is_enabled"),
+        "disabled_label": tr(info.get("disabled_label", "")) if info.get("disabled_label") else "",
+      })
 
-  def _set_active_adjustor(self, key: str, active: bool):
-    if active:
-      if self._active_adjustor_key and self._active_adjustor_key != key:
-        old = self._adjustor_rows.get(self._active_adjustor_key)
-        if old:
-          old.reset_interaction()
-      self._active_adjustor_key = key
-    elif self._active_adjustor_key == key:
-      self._active_adjustor_key = None
+    page_size = self._compute_page_size(TOGGLE_ROW_HEIGHT)
+    self._set_toggle_pages([toggle_defs[i:i+page_size] for i in range(0, len(toggle_defs), page_size)])
 
   def _init_adjustors(self):
     for key in self._controller.VOLUME_KEYS:
@@ -111,13 +94,13 @@ class SoundsManagerView(Widget):
       adjustor = AetherAdjustorRow(
         tr(info["title"]),
         tr(info["subtitle"]),
-        0.0, 101.0, 1.0,
+        float(info["min"]), 101.0, 1.0,
         get_value=lambda k=key: float(self._controller._params.get_int(k, return_default=True, default=101)),
         on_change=lambda _v: None,
         on_commit=None,
         unit="%",
         labels={0.0: tr("Muted"), 101.0: tr("Auto")},
-        presets=[0, 25, 50, 75, 101],
+        presets=[p for p in [0, 25, 50, 75, 101] if p >= info["min"]],
         is_active=lambda: False,
         set_active=lambda active, k=key: self._show_volume_slider(k) if active else None,
         style=PANEL_STYLE,
@@ -187,12 +170,12 @@ class SoundsManagerView(Widget):
     gui_app.push_widget(
       AetherSliderDialog(
         title=dialog_title,
-        min_val=0.0,
+        min_val=float(min_v),
         max_val=101.0,
         step=1.0,
         current_val=current_val,
         on_close=on_close,
-        presets=[0.0, 25.0, 50.0, 75.0, 101.0],
+        presets=[float(p) for p in [0, 25, 50, 75, 101] if p >= min_v],
         unit="%",
         labels={0.0: tr("Muted"), 101.0: tr("Auto")},
         color=PANEL_STYLE.accent,
@@ -200,34 +183,8 @@ class SoundsManagerView(Widget):
       )
     )
 
-  def _handle_mouse_press(self, mouse_pos: MousePos):
-    self._pressed_target = self._target_at(mouse_pos)
-    self._can_click = True
-    for adjustor in self._adjustor_rows.values():
-      adjustor._handle_mouse_press(mouse_pos)
-    self._toggle_grid._handle_mouse_press(mouse_pos)
-
-  def _handle_mouse_release(self, mouse_pos: MousePos):
-    for adjustor in self._adjustor_rows.values():
-      adjustor._handle_mouse_release(mouse_pos)
-    self._toggle_grid._handle_mouse_release(mouse_pos)
-
-    target = self._target_at(mouse_pos) if self._scroll_panel.is_touch_valid() else None
-    if self._pressed_target is not None and self._pressed_target == target and self._can_click:
-      self._activate_target(target)
-    self._pressed_target = None
-    self._can_click = True
-
-  def _handle_mouse_event(self, mouse_event: MouseEvent):
-    if not self._scroll_panel.is_touch_valid():
-      self._can_click = False
-      return
-    for adjustor in self._adjustor_rows.values():
-      adjustor._handle_mouse_event(mouse_event)
-    self._toggle_grid._handle_mouse_event(mouse_event)
-
   def _target_at(self, mouse_pos: MousePos) -> str | None:
-    if _point_hits(mouse_pos, self._reset_rect, None, pad_x=6, pad_y=0):
+    if point_hits(mouse_pos, self._reset_rect, None, pad_x=6, pad_y=0):
       return "action:restore_defaults"
     return None
 
@@ -235,157 +192,72 @@ class SoundsManagerView(Widget):
     if target == "action:restore_defaults":
       self._controller._restore_defaults()
 
-  def show_event(self):
-    super().show_event()
-    self._pressed_target = None
-    self._can_click = True
-
-  def hide_event(self):
-    super().hide_event()
-    self._pressed_target = None
-    self._can_click = True
-
-  def _render(self, rect: rl.Rectangle):
-    self.set_rect(rect)
-
-    frame, scroll_rect, content_width = init_list_panel(rect, PANEL_STYLE, metrics=SOUNDS_PANEL_METRICS)
-    self._scroll_rect = scroll_rect
-
-    self._draw_header(frame.header)
-
-    self._content_height = self._measure_content_height(content_width)
-
-    self._scroll_panel.set_enabled(self.is_visible)
-    self._scroll_offset = self._scroll_panel.update(
-      scroll_rect, max(self._content_height, scroll_rect.height)
-    )
-
-    rl.begin_scissor_mode(
-      int(scroll_rect.x), int(scroll_rect.y),
-      int(scroll_rect.width), int(scroll_rect.height)
-    )
-    self._draw_scroll_content(scroll_rect, content_width)
-    rl.end_scissor_mode()
-
-    if self._content_height > scroll_rect.height:
-      self._scrollbar.render(scroll_rect, self._content_height, self._scroll_offset)
-    draw_list_scroll_fades(scroll_rect, self._content_height, self._scroll_offset,
-                           AetherListColors.PANEL_BG)
-
   def _measure_content_height(self, content_width: float) -> float:
     col_width = (content_width - SECTION_GAP) / 2
-    left_h = 0.0
+
     for key in self._controller.VOLUME_KEYS:
-      left_h += self._adjustor_rows[key].measure_height(col_width)
-    left_h += GROUP_HEADER_HEIGHT + GROUP_HEADER_GAP
-    left_h += GROUP_HEADER_HEIGHT + GROUP_HEADER_GAP
-    left_h += GROUP_HEADER_HEIGHT + GROUP_HEADER_GAP
-    left_column_total_h = left_h + 16
+      self._adjustor_rows[key].custom_row_height = None
+    self._adjustor_rows[self._controller.COOLDOWN_KEY].custom_row_height = None
 
-    cd_h = self._adjustor_rows[self._controller.COOLDOWN_KEY].measure_height(col_width)
+    hdr_h = GROUP_HEADER_HEIGHT + GROUP_HEADER_GAP + GROUP_HEADER_LINE_GAP
+    vol_overhead = 4 + 24 + 4  # top pad + "Reset All" label + gap
 
-    tile_rows = self._toggle_grid.get_row_count(len(self._toggle_grid.tiles), available_width=col_width)
-    tile_gaps = self._toggle_grid.get_internal_gap_height(len(self._toggle_grid.tiles), available_width=col_width)
-    tiles_content_h = tile_rows * 130 + tile_gaps
+    available_h = max(72.0, (self._scroll_rect.height if self._scroll_rect else 0.0) - 6.0)
+    rows_available = max(72.0 * (len(self._controller.VOLUME_KEYS) + 1), available_h - vol_overhead)
+    ROW_HEIGHT = rows_available / (len(self._controller.VOLUME_KEYS) + 1)
+    for key in self._controller.VOLUME_KEYS:
+      self._adjustor_rows[key].custom_row_height = ROW_HEIGHT
+    self._adjustor_rows[self._controller.COOLDOWN_KEY].custom_row_height = ROW_HEIGHT
 
-    self._tile_grid_h = max(tiles_content_h, left_column_total_h - cd_h - SECTION_GAP - (GROUP_HEADER_HEIGHT + GROUP_HEADER_GAP) - 16.0)
+    left_content_h = (len(self._controller.VOLUME_KEYS) + 1) * ROW_HEIGHT + vol_overhead
+    tiles_needed_h = self.measure_page_grid_height(self._toggle_grid, col_width - 24) + 24 + 4 + hdr_h
+    max_content_h = max(left_content_h, tiles_needed_h)
 
-    right_column_total_h = cd_h + SECTION_GAP + (GROUP_HEADER_HEIGHT + GROUP_HEADER_GAP) + (self._tile_grid_h + 16.0)
+    self._left_container_h = max_content_h
+    self._tiles_container_h = max_content_h
 
-    section_overhead = SECTION_HEADER_HEIGHT + SECTION_HEADER_GAP
-    min_h = self._scroll_rect.height if self._scroll_rect else 0.0
-    return max(min_h, section_overhead + max(left_column_total_h, right_column_total_h))
+    return self._compute_two_column_height(max_content_h)
 
   def _draw_header(self, rect: rl.Rectangle):
-    draw_settings_panel_header(rect, tr("Sounds & Alerts"), tr("Manage system volumes and custom alert toggles."), subtitle_size=24)
-
-    btn_w = 120.0
-    btn_h = 38.0
-    btn_x = rect.x + rect.width - btn_w
-    btn_y = rect.y + (rect.height - btn_h) / 2
-    self._reset_rect = rl.Rectangle(btn_x, btn_y, btn_w, btn_h)
-
-    hovered = _point_hits(gui_app.last_mouse_event.pos, self._reset_rect, None, pad_x=6, pad_y=0)
-    pressed = self._pressed_target == "action:restore_defaults"
-    draw_action_pill(
-      self._reset_rect, tr("Reset All"),
-      rl.Color(255, 255, 255, 8 if not pressed else 14),
-      rl.Color(255, 255, 255, 18 if not pressed else 28),
-      AetherListColors.SUBTEXT if not hovered else AetherListColors.HEADER,
-    )
+    pass
 
   def _draw_scroll_content(self, rect: rl.Rectangle, content_width: float):
     y = rect.y + self._scroll_offset
     col_width = (content_width - SECTION_GAP) / 2
 
-    draw_section_header(
-      rl.Rectangle(rect.x, y, col_width, SECTION_HEADER_HEIGHT),
-      tr("Volume"), style=PANEL_STYLE
-    )
-    draw_section_header(
-      rl.Rectangle(rect.x + col_width + SECTION_GAP, y, col_width, SECTION_HEADER_HEIGHT),
-      tr("Alerts"), style=PANEL_STYLE
-    )
-    y += SECTION_HEADER_HEIGHT + SECTION_HEADER_GAP
-
     self._draw_volume_column(y, rect.x, col_width)
     self._draw_utility_column(y, rect.x + col_width + SECTION_GAP, col_width)
 
-  def _draw_group_header(self, x: float, y: float, width: float, label: str) -> float:
-    gui_label(rl.Rectangle(x, y, width, GROUP_HEADER_HEIGHT), label, 14, GROUP_HEADER_COLOR, FontWeight.MEDIUM)
-    y += GROUP_HEADER_HEIGHT
-    rl.draw_line(int(x), int(y), int(x + width), int(y), GROUP_HAIRLINE_COLOR)
-    return y + GROUP_HEADER_GAP
-
   def _draw_volume_column(self, y: float, x: float, width: float):
-    safety_keys = ["WarningImmediateVolume", "WarningSoftVolume", "RefuseVolume", "PromptDistractedVolume"]
-    system_keys = ["EngageVolume", "DisengageVolume"]
-    info_keys = ["PromptVolume", "BelowSteerSpeedVolume"]
+    all_keys = self._controller.VOLUME_KEYS + [self._controller.COOLDOWN_KEY]
 
-    groups = [
-      (tr("SAFETY ALERTS"), safety_keys),
-      (tr("SYSTEM STATE"), system_keys),
-      (tr("INFORMATIONAL"), info_keys),
-    ]
-
-    total_h = sum(GROUP_HEADER_HEIGHT + GROUP_HEADER_GAP + sum(self._adjustor_rows[k].measure_height(width) for k in keys) for _, keys in groups)
     draw_list_group_shell(
-      rl.Rectangle(x, y, width, total_h + 16),
+      rl.Rectangle(x, y, width, self._left_container_h),
       style=PANEL_STYLE
     )
 
-    current_y = y + 8
-    for label, keys in groups:
-      current_y = self._draw_group_header(x + 24, current_y, width - 48, label)
-      for key in keys:
-        adjustor = self._adjustor_rows[key]
-        row_h = adjustor.measure_height(width)
-        row_rect = rl.Rectangle(x, current_y, width, row_h)
-        adjustor.set_is_last(True)
-        adjustor.set_parent_rect(self._scroll_rect)
-        adjustor.render(row_rect)
-        current_y += row_h
+    current_y = y + 4
+
+    label_rect = rl.Rectangle(x + 24, current_y, width - 48, 24)
+    gui_label(label_rect, tr("Reset All"), 24, AetherListColors.MUTED, FontWeight.NORMAL,
+              alignment=rl.GuiTextAlignment.TEXT_ALIGN_RIGHT)
+    self._reset_rect = rl.Rectangle(label_rect.x + label_rect.width - 140, label_rect.y, 140, 24)
+    self._interactive_rects["action:restore_defaults"] = self._reset_rect
+    current_y += 28
+    for index, key in enumerate(all_keys):
+      adjustor = self._adjustor_rows[key]
+      row_h = adjustor.measure_height(width)
+      row_rect = rl.Rectangle(x, current_y, width, row_h)
+      adjustor.set_is_last(index == len(all_keys) - 1)
+      adjustor.set_parent_rect(self._scroll_rect)
+      adjustor.render(row_rect)
+      current_y += row_h
 
   def _draw_utility_column(self, y: float, x: float, width: float):
-    current_y = y
-
-    cd_key = self._controller.COOLDOWN_KEY
-    adjustor = self._adjustor_rows[cd_key]
-    row_h = adjustor.measure_height(width)
-
-    draw_list_group_shell(rl.Rectangle(x, current_y, width, row_h), style=PANEL_STYLE)
-
-    adjustor.set_is_last(True)
-    adjustor.set_parent_rect(self._scroll_rect)
-    adjustor.render(rl.Rectangle(x, current_y, width, row_h))
-    current_y += row_h + SECTION_GAP
-
-    current_y = self._draw_group_header(x + 24, current_y, width - 48, tr("CUSTOM ALERTS"))
-
-    draw_list_group_shell(rl.Rectangle(x, current_y, width, self._tile_grid_h + 16), style=PANEL_STYLE)
-
-    self._toggle_grid.set_parent_rect(self._scroll_rect)
-    self._toggle_grid.render(rl.Rectangle(x + 12, current_y + 8, width - 24, self._tile_grid_h))
+    draw_list_group_shell(rl.Rectangle(x, y, width, self._tiles_container_h), style=PANEL_STYLE)
+    header_y = draw_group_header(x + 24, y + 4, width - 48, tr("Alerts"))
+    avail_h = self._tiles_container_h - (header_y - y)
+    self._render_page_grid(self._toggle_grid, rl.Rectangle(x + 12, header_y, width - 24, max(0.0, avail_h - 12)))
 
 
 class StarPilotSoundsLayout(_SettingsPage):
@@ -404,24 +276,25 @@ class StarPilotSoundsLayout(_SettingsPage):
     "GreenLightAlert",
     "LeadDepartingAlert",
     "LoudBlindspotAlert",
+    "LoudBlindspotAlertWhenDisengaged",
     "SpeedLimitChangedAlert",
   ]
 
   COOLDOWN_INFO = {
     "title": tr_noop("Switchback Mode Cooldown"),
-    "subtitle": tr_noop("Time before switchback re-engages"),
+    "subtitle": "",
     "min": 0,
     "max": 30,
   }
   VOLUME_INFO = {
-    "WarningImmediateVolume": {"title": tr_noop("Immediate Warning"), "subtitle": tr_noop("Critical safety intervention"), "min": 25},
-    "WarningSoftVolume": {"title": tr_noop("Soft Warning"), "subtitle": tr_noop("Approaching system limits"), "min": 25},
-    "RefuseVolume": {"title": tr_noop("Engagement Refused"), "subtitle": tr_noop("Action refused by system"), "min": 0},
-    "PromptDistractedVolume": {"title": tr_noop("Distracted Driver"), "subtitle": tr_noop("Driver attention required"), "min": 0},
-    "EngageVolume": {"title": tr_noop("Engagement Chime"), "subtitle": tr_noop("System engaged confirmation"), "min": 0},
-    "DisengageVolume": {"title": tr_noop("Disengagement Alert"), "subtitle": tr_noop("Handoff to manual control"), "min": 0},
-    "PromptVolume": {"title": tr_noop("General Prompt"), "subtitle": tr_noop("System guidance prompt"), "min": 0},
-    "BelowSteerSpeedVolume": {"title": tr_noop("Low Speed Alert"), "subtitle": tr_noop("Minimum speed for steering"), "min": 0},
+    "WarningImmediateVolume": {"title": tr_noop("Immediate Warning"), "subtitle": "", "min": 25},
+    "WarningSoftVolume": {"title": tr_noop("Soft Warning"), "subtitle": "", "min": 25},
+    "RefuseVolume": {"title": tr_noop("Engagement Refused"), "subtitle": "", "min": 0},
+    "PromptDistractedVolume": {"title": tr_noop("Distracted Driver"), "subtitle": "", "min": 0},
+    "EngageVolume": {"title": tr_noop("Engagement Chime"), "subtitle": "", "min": 0},
+    "DisengageVolume": {"title": tr_noop("Disengagement Alert"), "subtitle": "", "min": 0},
+    "PromptVolume": {"title": tr_noop("General Prompt"), "subtitle": "", "min": 0},
+    "BelowSteerSpeedVolume": {"title": tr_noop("Low Speed Alert"), "subtitle": "", "min": 0},
   }
 
   _sound_player_process = None
@@ -433,21 +306,27 @@ class StarPilotSoundsLayout(_SettingsPage):
     self.ALERT_INFO = {
       "GreenLightAlert": {
         "title": tr_noop("Green Light"),
-        "subtitle": tr_noop("When lead car moves at green light"),
+        "subtitle": "",
       },
       "LeadDepartingAlert": {
         "title": tr_noop("Lead Departure"),
-        "subtitle": tr_noop("When lead vehicle pulls away"),
+        "subtitle": "",
       },
       "LoudBlindspotAlert": {
         "title": tr_noop("Loud Blindspot"),
-        "subtitle": tr_noop("Blind spot collision warning"),
+        "subtitle": "",
         "is_enabled": lambda: starpilot_state.car_state.hasBSM,
         "disabled_label": tr_noop("Needs BSM")
       },
+      "LoudBlindspotAlertWhenDisengaged": {
+        "title": tr_noop("Loud While Paused"),
+        "subtitle": "",
+        "is_enabled": lambda: starpilot_state.car_state.hasBSM and self._params.get_bool("LoudBlindspotAlert"),
+        "disabled_label": tr_noop("Enable Loud Blindspot")
+      },
       "SpeedLimitChangedAlert": {
         "title": tr_noop("Speed Limit"),
-        "subtitle": tr_noop("When posted speed limit changes"),
+        "subtitle": "",
         "is_enabled": lambda: self._params.get_bool("ShowSpeedLimits") or (
           starpilot_state.car_state.hasOpenpilotLongitudinal and self._params.get_bool("SpeedLimitController")
         ),
@@ -510,4 +389,4 @@ while True:
     try:
       self._sound_player_process.stdin.write(f"{sound_path}|{volume}\n".encode())
       self._sound_player_process.stdin.flush()
-    except: pass
+    except (BrokenPipeError, OSError): pass
