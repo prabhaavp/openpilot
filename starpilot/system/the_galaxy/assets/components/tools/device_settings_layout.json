@@ -2222,6 +2222,42 @@
         "settings_tier": "simple"
       },
       {
+        "key": "PathSmoothingFactor",
+        "label": "Path Smoothing",
+        "description": "Reduce path and lane-line jitter by applying temporal smoothing. Higher values produce a smoother but more delayed path.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 100.0,
+        "step": 1.0,
+        "parent_key": "ModelUI",
+        "settings_tier": "simple"
+      },
+      {
+        "key": "MinPathSpeed",
+        "label": "Min Path Speed",
+        "description": "Hide the driving path and lane lines below the set speed (mph). Set to 0 to always show.",
+        "data_type": "int",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 99.0,
+        "step": 1.0,
+        "parent_key": "ModelUI",
+        "settings_tier": "simple"
+      },
+      {
+        "key": "LeadSmoothingFactor",
+        "label": "Lead Marker Smoothing",
+        "description": "Smooth the lead marker transparency to reduce flickering. Higher values produce smoother transitions.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 100.0,
+        "step": 1.0,
+        "parent_key": "ModelUI",
+        "settings_tier": "simple"
+      },
+      {
         "key": "NavigationUI",
         "label": "Navigation Widgets",
         "description": "Speed limits, and other navigation widgets.",
