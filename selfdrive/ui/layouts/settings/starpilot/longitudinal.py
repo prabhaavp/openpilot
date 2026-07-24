@@ -258,7 +258,7 @@ class ConditionalDriveModeView(AdjustorTogglesPanelView):
       kwargs["is_enabled"] = info["is_enabled"]
     if "disabled_label" in info:
       kwargs["disabled_label"] = info["disabled_label"]
-      
+
     return cls(**kwargs)
 
   def _init_adjustors(self):
@@ -309,7 +309,7 @@ class ConditionalDriveModeView(AdjustorTogglesPanelView):
       "CCMSpeedLead": {"title": tr("Speed w/ Lead"), "min": 0, "max": max_speed, "unit": speed_unit, "labels": {}, "presets": [0, 35, 55, 65, 80]},
       "CCMSetSpeedMargin": {"title": tr("Set Speed Margin"), "min": 0, "max": 30.0 if is_metric else 15.0, "unit": speed_unit, "labels": {}, "presets": [0, 5, 10, 15]},
     }
-    
+
     spec = specs[key]
     original_val = float(self._controller._params.get_int(key))
 
@@ -332,10 +332,10 @@ class ConditionalDriveModeView(AdjustorTogglesPanelView):
     mode = self._get_drive_mode_index()
     if mode == 0:
       return self.TAB_HEIGHT + self.TAB_BOTTOM_GAP
-    
+
     keys = self._cem_keys if mode == 1 else self._ccm_keys
     grid = self._toggle_grid
-    
+
     col_width = (content_width - SECTION_GAP) / 2 if self._uses_two_columns(content_width) else content_width
 
     for key in keys:
@@ -343,7 +343,7 @@ class ConditionalDriveModeView(AdjustorTogglesPanelView):
 
     default_adjustor_h = float(AETHER_LIST_METRICS.adjustor_row_height)
     left_h = len(keys) * default_adjustor_h + 16.0
-    
+
     num_tiles = 4 if self._has_pagination else len(grid.tiles)
     if PANEL_STYLE.toggle_row_mode:
       rows = num_tiles
@@ -351,7 +351,7 @@ class ConditionalDriveModeView(AdjustorTogglesPanelView):
     else:
       rows = (num_tiles + 1) // 2 if self._uses_two_columns(content_width) else num_tiles
       tile_h = grid.min_tile_height
-    
+
     pagination_space = 32.0 if self._has_pagination else 0.0
     tiles_h = rows * tile_h + (rows - 1) * grid.gap + grid.gap * 2 + pagination_space
 
@@ -360,21 +360,21 @@ class ConditionalDriveModeView(AdjustorTogglesPanelView):
     if self._uses_two_columns(content_width):
       max_natural_h = max(left_h, right_h)
       section_overhead = SECTION_HEADER_HEIGHT + SECTION_HEADER_GAP
-      
+
       if self._scroll_rect:
         available_h = self._scroll_rect.height - section_overhead - self.TAB_HEIGHT - self.TAB_BOTTOM_GAP - 6.0
       else:
         available_h = max_natural_h
-        
+
       max_container_h = available_h
-      
+
       left_row_h = max(95.0, (max_container_h - 16.0) / max(1, len(keys)))
       for key in keys:
         self._adjustor_rows[key].custom_row_height = left_row_h
-        
+
       self._left_container_h = max_container_h
       self._tiles_container_h = max_container_h
-      
+
       return self._compute_two_column_height(section_overhead + max_container_h) + self.TAB_HEIGHT + self.TAB_BOTTOM_GAP
     else:
       self._left_container_h = left_h
@@ -384,12 +384,12 @@ class ConditionalDriveModeView(AdjustorTogglesPanelView):
 
   def _draw_scroll_content(self, rect: rl.Rectangle, content_width: float):
     y = rect.y + self._scroll_offset
-    
+
     header_w = content_width
     bar_rect = rl.Rectangle(rect.x, y, header_w, self.TAB_HEIGHT)
     draw_list_group_shell(bar_rect, style=PANEL_STYLE)
     self._drive_mode_control.render(bar_rect)
-    
+
     y += self.TAB_HEIGHT + self.TAB_BOTTOM_GAP
     mode = self._get_drive_mode_index()
     if mode == 0:
@@ -397,15 +397,15 @@ class ConditionalDriveModeView(AdjustorTogglesPanelView):
 
     keys = self._cem_keys if mode == 1 else self._ccm_keys
     grid = self._toggle_grid
-    
+
     col_width = (content_width - SECTION_GAP) / 2 if self._uses_two_columns(content_width) else content_width
 
     draw_section_header(rl.Rectangle(rect.x, y, col_width, SECTION_HEADER_HEIGHT), tr("Values"), style=PANEL_STYLE)
     if self._uses_two_columns(content_width):
       draw_section_header(rl.Rectangle(rect.x + col_width + SECTION_GAP, y, col_width, SECTION_HEADER_HEIGHT), tr("Triggers"), style=PANEL_STYLE)
-    
+
     y += SECTION_HEADER_HEIGHT + SECTION_HEADER_GAP
-    
+
     self._draw_adjustors(y, rect.x, col_width, keys)
 
     tg_columns = 1 if PANEL_STYLE.toggle_row_mode else 2
@@ -484,7 +484,7 @@ class StarPilotLongitudinalLayout(_SettingsPage):
     ce_lead = lambda: ce_on() and self._params.get_bool("CELead")
     csc_on = lambda: self._params.get_bool("CurveSpeedController")
     confirmation_on = lambda: self._params.get_bool("SLCConfirmation")
-    
+
     # ── 1. Longitudinal Tuning Rows ──
     self._tune_rows = [
       SettingRow("AccelProfile", "value", tr_noop("Acceleration Profile"),
@@ -660,6 +660,7 @@ class StarPilotLongitudinalLayout(_SettingsPage):
       ))
 
     # ── 4. Adaptive Speed Controls Rows (CES + CSC + CCM) ──
+    manual_csc_on = lambda: csc_on() and self._params.get_bool("UseManualCurveSpeed")
     self._curve_speed_controller_rows = [
       SettingRow("CalibratedLatAccel", "value", tr_noop("Calibrated Lateral Accel"),
                  subtitle=tr_noop("The learned lateral acceleration from collected driving data. Higher values allow faster cornering."),
@@ -677,6 +678,16 @@ class StarPilotLongitudinalLayout(_SettingsPage):
                  action_danger=True,
                  on_click=self._reset_curve_data,
                  visible=csc_on),
+      SettingRow("UseManualCurveSpeed", "toggle", tr_noop("Manual Curve Speed"),
+                 subtitle=tr_noop("Override the learned curve speed with a fixed manual lateral acceleration limit."),
+                 get_state=lambda: self._params.get_bool("UseManualCurveSpeed"),
+                 set_state=lambda s: self._params.put_bool("UseManualCurveSpeed", s),
+                 visible=csc_on),
+      SettingRow("ManualCurveSpeed", "value", tr_noop("Manual Lateral Accel Limit"),
+                 subtitle=tr_noop("Fixed lateral acceleration for curve speed control."),
+                 get_value=lambda: f"{self._params.get_float('ManualCurveSpeed'):.1f} m/s^2",
+                 on_click=lambda: self._show_slider("ManualCurveSpeed", 0.5, 5.0, 0.1, " m/s^2", value_type="float"),
+                 visible=manual_csc_on),
     ]
 
     # ── 5. Driving Personalities Rows ──
