@@ -103,6 +103,7 @@ class LatControlTorque(LatControl):
     self.is_tucson_4th_gen = CP.carFingerprint in TUCSON_4TH_GEN_CARS
     self.is_civic_bosch_modified = CP.carFingerprint == HONDA_CAR.HONDA_CIVIC_BOSCH and bool(CP.flags & HondaFlags.EPS_MODIFIED)
     self.is_silverado = CP.carFingerprint in SILVERADO_CARS
+    self.is_ram_1500 = CP.carFingerprint in RAM_1500_CARS
     self.is_gm = CP.brand == "gm"
     self.is_hkg_canfd_torque = CP.brand == "hyundai" and bool(CP.flags & HyundaiFlags.CANFD)
     self.flm_surface_profile_key = get_flm_surface_profile_key(CP.carFingerprint, torque_control=True)
@@ -414,6 +415,8 @@ class LatControlTorque(LatControl):
       if ioniq_6_active:
         output_torque *= get_ioniq_6_highway_output_taper_scale(setpoint, CS.vEgo)
         output_torque *= get_ioniq_6_highway_transition_output_taper_scale(setpoint, desired_lateral_jerk, CS.vEgo)
+      elif self.is_ram_1500:
+        output_torque *= get_ram_1500_transition_output_scale(setpoint, desired_lateral_jerk, CS.vEgo)
       elif rav4_prime_active:
         output_torque *= get_rav4_prime_output_taper_scale(setpoint, desired_lateral_jerk, CS.vEgo)
       elif prius_active:

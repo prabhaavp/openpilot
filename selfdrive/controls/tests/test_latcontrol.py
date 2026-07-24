@@ -8,6 +8,7 @@ import openpilot.selfdrive.controls.lib.latcontrol_pid as latcontrol_pid
 import openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes as latcontrol_vehicle_tunes
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.interfaces import CarInterfaceBase
+from opendbc.car.chrysler.values import CAR as CHRYSLER
 from opendbc.car.honda.values import CAR as HONDA, HondaFlags
 from opendbc.car.toyota.values import CAR as TOYOTA
 from opendbc.car.nissan.values import CAR as NISSAN
@@ -26,6 +27,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes import (
   clear_flm_runtime_overrides,
   get_flm_runtime_overrides,
   get_hkg_canfd_base_friction_threshold,
+  get_ram_1500_transition_output_scale,
   get_subaru_impreza_pid_output_scale,
   normalize_flm_overrides,
   set_flm_runtime_overrides,
@@ -623,6 +625,33 @@ class TestLatControl:
     )
 
     assert controller.is_rav4_prime
+    assert lac_log.active
+    assert tapered_output == pytest.approx(base_output * 0.5)
+
+  def test_ram_1500_transition_taper_curve(self):
+    assert get_ram_1500_transition_output_scale(0.4, 0.2, 17.0) == pytest.approx(1.0)
+    assert get_ram_1500_transition_output_scale(0.4, 1.1, 8.0) == pytest.approx(1.0)
+
+    center_transition = get_ram_1500_transition_output_scale(0.4, 1.1, 17.0)
+    medium_transition = get_ram_1500_transition_output_scale(1.2, -1.1, 17.0)
+    assert 0.6 < center_transition < medium_transition < 1.0
+    assert get_ram_1500_transition_output_scale(1.85, 2.5, 17.0) == pytest.approx(1.0)
+
+  def test_ram_1500_transition_taper_update_path(self, monkeypatch):
+    controller, VM, CS, params, starpilot_toggles = self._build_torque_controller(CHRYSLER.RAM_1500_5TH_GEN)
+    base_output, _, lac_log = controller.update(
+      True, CS, VM, params, False, 0.0025, False, 0.2, None, None, starpilot_toggles,
+    )
+
+    monkeypatch.setattr(latcontrol_torque, "get_ram_1500_transition_output_scale", lambda *_args: 0.5)
+    tapered_controller, tapered_VM, tapered_CS, tapered_params, tapered_toggles = self._build_torque_controller(
+      CHRYSLER.RAM_1500_5TH_GEN,
+    )
+    tapered_output, _, _ = tapered_controller.update(
+      True, tapered_CS, tapered_VM, tapered_params, False, 0.0025, False, 0.2, None, None, tapered_toggles,
+    )
+
+    assert controller.is_ram_1500
     assert lac_log.active
     assert tapered_output == pytest.approx(base_output * 0.5)
 

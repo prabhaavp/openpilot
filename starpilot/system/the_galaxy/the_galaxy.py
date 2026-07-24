@@ -2596,6 +2596,18 @@ def _normalize_vasm_config(data):
     raise ValueError("At least one window polygon is required.")
   return config
 
+
+def _decode_json_object(value):
+  if isinstance(value, bytes):
+    value = value.decode("utf-8", errors="replace")
+  if isinstance(value, str):
+    try:
+      value = json.loads(value)
+    except json.JSONDecodeError:
+      return {}
+  return value if isinstance(value, dict) else {}
+
+
 def _is_blank_param_raw(raw_value):
   if raw_value is None:
     return True
@@ -7462,8 +7474,7 @@ def setup(app):
 
   @app.route("/api/v_asm/config", methods=["GET"])
   def v_asm_get_config():
-    config = params.get("VASMAnnotationConfig")
-    return jsonify(config if isinstance(config, dict) else {})
+    return jsonify(_decode_json_object(params.get("VASMAnnotationConfig")))
 
   @app.route("/api/v_asm/config", methods=["POST"])
   def v_asm_save_config():

@@ -2,6 +2,7 @@ import json
 import math
 import numpy as np
 
+from opendbc.car.chrysler.values import CAR as CHRYSLER_CAR
 from opendbc.car.gm.values import CAR as GM_CAR
 from opendbc.car.hyundai.values import CAR as HYUNDAI_CAR
 from opendbc.car.subaru.values import CAR as SUBARU_CAR
@@ -143,6 +144,10 @@ LEXUS_IS_CARS = (
 
 SUBARU_IMPREZA_CARS = (
   SUBARU_CAR.SUBARU_IMPREZA,
+)
+
+RAM_1500_CARS = (
+  CHRYSLER_CAR.RAM_1500_5TH_GEN,
 )
 
 BOLT_2017_LATERAL_TESTING_GROUND_ID = testing_ground.id_3
@@ -765,6 +770,14 @@ SUBARU_IMPREZA_PID_TAPER_START_DEG = 0.75
 SUBARU_IMPREZA_PID_TAPER_FULL_DEG = 4.0
 SUBARU_IMPREZA_PID_TAPER_MIN = 0.58
 
+RAM_1500_TRANSITION_TAPER_MAX = 0.34
+RAM_1500_TRANSITION_SPEED_ONSET = 10.0
+RAM_1500_TRANSITION_SPEED_FULL = 15.0
+RAM_1500_TRANSITION_JERK_ONSET = 0.35
+RAM_1500_TRANSITION_JERK_FULL = 1.10
+RAM_1500_TRANSITION_LAT_FADE_START = 0.65
+RAM_1500_TRANSITION_LAT_FADE_END = 1.85
+
 TRAILER_LOAD_FULL_ASSIST_KG = 15000.0 * CV.LB_TO_KG
 TRAILER_LATERAL_MIN_SPEED = 15.0 * CV.MPH_TO_MS
 TRAILER_LATERAL_FULL_SPEED = 35.0 * CV.MPH_TO_MS
@@ -1079,6 +1092,15 @@ def get_subaru_impreza_pid_output_scale(angle_error_deg: float) -> float:
   error_weight = min(max((abs(angle_error_deg) - SUBARU_IMPREZA_PID_TAPER_START_DEG) /
                          (SUBARU_IMPREZA_PID_TAPER_FULL_DEG - SUBARU_IMPREZA_PID_TAPER_START_DEG), 0.0), 1.0)
   return 1.0 - ((1.0 - SUBARU_IMPREZA_PID_TAPER_MIN) * error_weight)
+
+
+def get_ram_1500_transition_output_scale(desired_lateral_accel: float, desired_lateral_jerk: float, v_ego: float) -> float:
+  speed_weight = float(np.interp(v_ego, [RAM_1500_TRANSITION_SPEED_ONSET, RAM_1500_TRANSITION_SPEED_FULL], [0.0, 1.0]))
+  jerk_weight = float(np.interp(abs(desired_lateral_jerk),
+                                [RAM_1500_TRANSITION_JERK_ONSET, RAM_1500_TRANSITION_JERK_FULL], [0.0, 1.0]))
+  lat_weight = 1.0 - float(np.interp(abs(desired_lateral_accel),
+                                     [RAM_1500_TRANSITION_LAT_FADE_START, RAM_1500_TRANSITION_LAT_FADE_END], [0.0, 1.0]))
+  return 1.0 - (RAM_1500_TRANSITION_TAPER_MAX * speed_weight * jerk_weight * lat_weight)
 
 
 def civic_bosch_modified_lateral_testing_ground_active() -> bool:
