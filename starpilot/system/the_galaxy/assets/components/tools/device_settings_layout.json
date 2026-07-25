@@ -323,7 +323,7 @@
         "ui_type": "toggle",
         "is_parent_toggle": true,
         "requires_nonempty_key": "VASMAnnotationConfig",
-        "disabled_reason": "Configure window annotations first in Galaxy > V-ASM Annotations",
+        "disabled_reason": "Configure window annotations first in Galaxy > V-Adj Spot Monitor",
         "settings_tier": "advanced"
       },
       {
