@@ -7464,11 +7464,16 @@ def _get_live_driver_jpeg():
     except subprocess.CalledProcessError:
       managed_processes['camerad'].start()
       started = True
-      time.sleep(3.0)
 
     client = VisionIpcClient("camerad", VisionStreamType.VISION_STREAM_DRIVER, True)
     if not client.connect(True):
       return None
+
+    if started:
+      settle_deadline = time.monotonic() + 4.0
+      while time.monotonic() < settle_deadline:
+        client.recv(timeout_ms=100)
+
     buf = client.recv(timeout_ms=5000)
     if buf is None:
       return None
