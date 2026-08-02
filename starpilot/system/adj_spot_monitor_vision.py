@@ -43,6 +43,7 @@ class VASMDaemon:
 
     self.inference = VASMInference(V_ASM_MODEL_PATH)
     self.inference.load()
+    print(f"[VASM] load error: {self.inference.last_error}")
 
     self._cache_params()
 
