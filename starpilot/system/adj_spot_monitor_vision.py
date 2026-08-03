@@ -74,15 +74,16 @@ class VASMDaemon:
     self._load_annotation_config()
     self._publish(False, False, 0.0, 0.0, 0, force=True, updated_at=0.0)
 
-    print(f"[VASM] Started (model_valid={self.inference.valid})")
+    print(f"[VASM] Started (classification model_valid={self.inference.valid})")
 
   def _cache_params(self):
     self._enabled = self.params.get_bool("VASMEnabled")
     self._slv_enabled = self.params.get_bool("VisionSpeedLimitDetection")
-    confidence_threshold = self.params.get_float("VASMConfidenceThreshold") or 0.85
-    smooth_seconds = self.params.get_float("VASMSmoothSeconds") or 0.2
-    self._conf_thresh = min(max(confidence_threshold, 0.25), 1.0)
-    self._smooth_sec = min(max(smooth_seconds, 0.1), 0.5)
+    confidence_threshold = self.params.get_float("VASMConfidenceThreshold") or 0.99
+    smooth_seconds = self.params.get_float("VASMSmoothSeconds") or 0.20
+    self._conf_thresh = min(max(confidence_threshold, 0.50), 1.0)
+    self._smooth_sec = min(max(smooth_seconds, 0.05), 0.50)
+    self._conf_hold_off = self._conf_thresh * 0.85  # 15% below the defined confidence threshold
 
   def _maybe_refresh_params(self, now):
     if now - self._last_param_refresh >= PARAM_REFRESH_INTERVAL:
@@ -256,6 +257,7 @@ class VASMDaemon:
           conf_thresh=self._conf_thresh,
           smooth_sec=self._smooth_sec,
           side_to_infer=self.current_side,
+          conf_hold_off=self._conf_hold_off,
         )
 
         self._inference_count += 1
