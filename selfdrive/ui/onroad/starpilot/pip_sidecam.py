@@ -8,7 +8,6 @@ import weakref
 import pyray as rl
 
 from msgq.visionipc import VisionIpcClient, VisionStreamType
-from openpilot.system.ui.lib.application import gui_app
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.starpilot.common.vision_bsm import get_fresh_vasm_state
 
@@ -36,32 +35,33 @@ void main() {
 }
 """
 
-# YUV (NV12) -> RGB with a soft circular alpha mask around the bubble.
+# YUV (NV12) -> RGB. The crop is applied as normalized offsets onto the full-frame
+# texture (uCropMin/uCropSize), and the circular bubble mask is computed from the
+# normalized fragment position within the square destination rect. This avoids any
+# dependence on gl_FragCoord's Y-origin, which differs between desktop and device GL.
 PIP_FRAGMENT_SHADER = PIP_SHADER_VERSION + """
 in vec2 fragTexCoord;
 uniform sampler2D texture0;
 uniform sampler2D texture1;
-uniform vec2 uCenter;
-uniform vec2 uScreenSize;
-uniform float uRadius;
+uniform vec2 uCropMin;
+uniform vec2 uCropSize;
 out vec4 fragColor;
 void main() {
-  vec2 uv = fragTexCoord;
+  vec2 uv = uCropMin + fragTexCoord * uCropSize;
   float y = texture(texture0, uv).r;
   vec2 c = texture(texture1, uv).ra - 0.5;
   vec3 rgb = vec3(y + 1.402 * c.y, y - 0.344 * c.x - 0.714 * c.y, y + 1.772 * c.x);
 
-  vec2 fragPos = vec2(gl_FragCoord.x, uScreenSize.y - gl_FragCoord.y);
-  float dist = distance(fragPos, uCenter);
-  float edge = 2.0;
-  float alpha = 1.0 - smoothstep(uRadius - edge, uRadius, dist);
+  vec2 p = fragTexCoord - 0.5;
+  float dist = length(p);
+  float edge = 0.02;
+  float alpha = 1.0 - smoothstep(0.5 - edge, 0.5, dist);
 
   fragColor = vec4(rgb, alpha);
 }
 """
 
 UNIFORM_VEC2 = rl.ShaderUniformDataType.SHADER_UNIFORM_VEC2
-UNIFORM_FLOAT = rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT
 
 CONNECTION_RETRY_INTERVAL = 0.2
 PARAM_REFRESH_INTERVAL = 2.0
@@ -104,15 +104,19 @@ class PipSideCamera:
 
     self.shader = rl.load_shader_from_memory(PIP_VERTEX_SHADER, PIP_FRAGMENT_SHADER)
     self._texture1_loc = rl.get_shader_location(self.shader, "texture1")
-    self._center_loc = rl.get_shader_location(self.shader, "uCenter")
-    self._screen_size_loc = rl.get_shader_location(self.shader, "uScreenSize")
-    self._radius_loc = rl.get_shader_location(self.shader, "uRadius")
+    self._crop_min_loc = rl.get_shader_location(self.shader, "uCropMin")
+    self._crop_size_loc = rl.get_shader_location(self.shader, "uCropSize")
 
     # Pre-allocated CFFI buffers / vectors reused every frame to avoid GC churn
     # in the 60 FPS render loop.
-    self._radius_ptr = rl.ffi.new("float[1]")
-    self._center_vec = rl.Vector2(0, 0)
-    self._screen_vec = rl.Vector2(0, 0)
+    self._crop_min_vec = rl.Vector2(0, 0)
+    self._crop_size_vec = rl.Vector2(0, 0)
+    self._src_rect = rl.Rectangle(0, 0, 0, 0)
+    self._dst_rect = rl.Rectangle(0, 0, 0, 0)
+    self._crop_rect_obj = rl.Rectangle(0, 0, 0, 0)
+    self._bubble_rect_obj = rl.Rectangle(0, 0, 0, 0)
+    self._zero_vec2 = rl.Vector2(0, 0)
+    self._border_color = rl.Color(255, 255, 255, 120)
 
     self_ref = weakref.ref(self)
 
@@ -159,6 +163,13 @@ class PipSideCamera:
     except (TypeError, ValueError, json.JSONDecodeError):
       self._mask = {}
 
+  def _mask_key_for_side(self, side: str) -> str:
+    # The driver camera is mirrored: the car's LEFT window appears on the image's
+    # RIGHT half (and vice versa). The calibration points are keyed by image side
+    # (center_left = left side of the image), so the LEFT bubble reads the image's
+    # right point and the RIGHT bubble reads the image's left point.
+    return "center_right" if side == "left" else "center_left"
+
   def active_sides(self) -> list[str]:
     """Return the car-side keys ('left'/'right') whose preview bubble should show."""
     if not ui_state.started:
@@ -179,33 +190,41 @@ class PipSideCamera:
     right_bsm = bool(car_state.rightBlindspot) or vasm_right
 
     sides = []
-    if self._mask.get("center_left") and ((self._show_on_blinker and left_blinker) or (self._show_on_bsm and left_bsm)):
+    if self._mask.get(self._mask_key_for_side("left")) and ((self._show_on_blinker and left_blinker) or (self._show_on_bsm and left_bsm)):
       sides.append("left")
-    if self._mask.get("center_right") and ((self._show_on_blinker and right_blinker) or (self._show_on_bsm and right_bsm)):
+    if self._mask.get(self._mask_key_for_side("right")) and ((self._show_on_blinker and right_blinker) or (self._show_on_bsm and right_bsm)):
       sides.append("right")
     return sides
 
-  def _crop_rect(self, side: str) -> rl.Rectangle | None:
-    center = self._mask.get(f"center_{side}")
+  def _update_crop_rect(self, side: str) -> bool:
+    center = self._mask.get(self._mask_key_for_side(side))
     size = self._mask.get("crop_size")
     if not center or len(center) < 2 or not size:
-      return None
+      return False
     try:
       cx, cy = float(center[0]), float(center[1])
-      half = float(size) / 2.0
+      sz = float(size)
+      half = sz / 2.0
     except (TypeError, ValueError):
-      return None
+      return False
     if half <= 0:
-      return None
-    return rl.Rectangle(cx - half, cy - half, size, size)
+      return False
+    self._crop_rect_obj.x = cx - half
+    self._crop_rect_obj.y = cy - half
+    self._crop_rect_obj.width = sz
+    self._crop_rect_obj.height = sz
+    return True
 
-  def _bubble_rect(self, content_rect: rl.Rectangle, side: str) -> rl.Rectangle:
+  def _update_bubble_rect(self, content_rect: rl.Rectangle, side: str):
     radius = int(min(content_rect.width, content_rect.height) * BUBBLE_RADIUS_FRACTION)
     radius = max(BUBBLE_RADIUS_MIN, min(radius, BUBBLE_RADIUS_MAX))
     margin = BUBBLE_MARGIN
     cx = content_rect.x + margin + radius if side == "left" else content_rect.x + content_rect.width - margin - radius
     cy = content_rect.y + content_rect.height - margin - radius
-    return rl.Rectangle(cx - radius, cy - radius, radius * 2, radius * 2)
+    self._bubble_rect_obj.x = cx - radius
+    self._bubble_rect_obj.y = cy - radius
+    self._bubble_rect_obj.width = radius * 2.0
+    self._bubble_rect_obj.height = radius * 2.0
 
   def render(self, content_rect: rl.Rectangle):
     if not ui_state.started:
@@ -237,40 +256,48 @@ class PipSideCamera:
       self._texture_needs_update = False
 
     for side in sides:
-      crop = self._crop_rect(side)
-      if crop is None:
+      if not self._update_crop_rect(side):
         continue
-      bubble = self._bubble_rect(content_rect, side)
-      self._draw_bubble(bubble, crop)
+      self._update_bubble_rect(content_rect, side)
+      self._draw_bubble()
 
-  def _draw_bubble(self, bubble: rl.Rectangle, crop: rl.Rectangle):
+  def _draw_bubble(self):
+    bubble = self._bubble_rect_obj
+    crop = self._crop_rect_obj
+
     cx = bubble.x + bubble.width / 2
     cy = bubble.y + bubble.height / 2
     radius = bubble.width / 2
 
     # Backing disc + soft ring so the video edges read clearly.
     rl.draw_circle(int(round(cx)), int(round(cy)), radius, rl.BLACK)
-    rl.draw_circle_lines(int(round(cx)), int(round(cy)), radius, rl.Color(255, 255, 255, 120))
+    rl.draw_circle_lines(int(round(cx)), int(round(cy)), radius, self._border_color)
 
-    # Reuse pre-allocated shader values (no per-frame CFFI/vector allocation).
-    self._center_vec.x = cx
-    self._center_vec.y = cy
-    self._screen_vec.x = float(gui_app.width)
-    self._screen_vec.y = float(gui_app.height)
-    self._radius_ptr[0] = float(radius)
+    # Normalize the crop by the actual texture dimensions (stride-based) and use a
+    # full-texture source rect so fragTexCoord spans strictly 0..1 across the square
+    # destination. This keeps the circular mask correct regardless of stride/width.
+    tex_w = float(self.texture_y.width)
+    tex_h = float(self.texture_y.height)
+    self._crop_min_vec.x = crop.x / tex_w
+    self._crop_min_vec.y = crop.y / tex_h
+    self._crop_size_vec.x = crop.width / tex_w
+    self._crop_size_vec.y = crop.height / tex_h
 
-    # NOTE: raylib rects are top-left origin; gl_FragCoord is bottom-left. Both
-    # uCenter and the computed fragPos are kept in top-left space so the mask aligns.
-    rl.set_shader_value(self.shader, self._center_loc, self._center_vec, UNIFORM_VEC2)
-    rl.set_shader_value(self.shader, self._screen_size_loc, self._screen_vec, UNIFORM_VEC2)
-    rl.set_shader_value(self.shader, self._radius_loc, self._radius_ptr, UNIFORM_FLOAT)
+    self._src_rect.x = 0.0
+    self._src_rect.y = 0.0
+    self._src_rect.width = tex_w
+    self._src_rect.height = tex_h
 
-    src_rect = rl.Rectangle(crop.x, crop.y, crop.width, crop.height)
-    dst_rect = rl.Rectangle(bubble.x, bubble.y, bubble.width, bubble.height)
+    self._dst_rect.x = bubble.x
+    self._dst_rect.y = bubble.y
+    self._dst_rect.width = bubble.width
+    self._dst_rect.height = bubble.height
 
     rl.begin_shader_mode(self.shader)
+    rl.set_shader_value(self.shader, self._crop_min_loc, self._crop_min_vec, UNIFORM_VEC2)
+    rl.set_shader_value(self.shader, self._crop_size_loc, self._crop_size_vec, UNIFORM_VEC2)
     rl.set_shader_value_texture(self.shader, self._texture1_loc, self.texture_uv)
-    rl.draw_texture_pro(self.texture_y, src_rect, dst_rect, rl.Vector2(0, 0), 0.0, rl.WHITE)
+    rl.draw_texture_pro(self.texture_y, self._src_rect, self._dst_rect, self._zero_vec2, 0.0, rl.WHITE)
     rl.end_shader_mode()
 
   def _ensure_connection(self) -> bool:

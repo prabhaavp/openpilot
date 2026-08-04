@@ -96,7 +96,6 @@ GITLAB_SUBMISSIONS_PROJECT_ID = "71992109"
 GITLAB_TOKEN = os.environ.get("GITLAB_TOKEN", "")
 LEGACY_LATERAL_METHOD_API_PREFIX = "/api/" + "".join(("f", "t", "m"))
 VASM_CONFIGURATION_KEYS = {"VASMEnabled", "VASMConfidenceThreshold", "VASMSmoothSeconds", "VASMAnnotationConfig"}
-PIP_CONFIGURATION_KEYS = {"PIPPreviewEnabled", "PIPPreviewShowOnBlinker", "PIPPreviewShowOnBSM", "PIPPreviewMask"}
 
 GALAXY_DEPS_PATH = "/data/galaxy_deps"
 LEGACY_GALAXY_DEPS_PATH = "/data/" + "".join(chr(code) for code in (112, 111, 110, 100)) + "_deps"
@@ -4497,9 +4496,6 @@ def setup(app):
       if key in VASM_CONFIGURATION_KEYS and params.get_bool("IsOnroad"):
         return jsonify({"error": "Cannot change V-ASM configuration while driving."}), 403
 
-      if key in PIP_CONFIGURATION_KEYS and params.get_bool("IsOnroad"):
-        return jsonify({"error": "Cannot change PiP Preview configuration while driving."}), 403
-
       if key in PANDA_FIRMWARE_TOGGLE_KEYS and params.get_bool("IsOnroad"):
         return jsonify({"error": "Cannot flash Panda firmware while driving."}), 403
       if key in PANDA_FIRMWARE_TOGGLE_KEYS and data.get(PANDA_FIRMWARE_CONFIRMATION_FIELD) is not True:
@@ -7596,8 +7592,6 @@ def setup(app):
 
   @app.route("/api/pip_preview/config", methods=["POST"])
   def pip_preview_save_config():
-    if params.get_bool("IsOnroad"):
-      return jsonify({"error": "Cannot change PiP Preview configuration while driving."}), 409
     try:
       config = _normalize_pip_preview_config(request.get_json(silent=True))
     except ValueError as exc:
@@ -7609,8 +7603,6 @@ def setup(app):
 
   @app.route("/api/pip_preview/config", methods=["DELETE"])
   def pip_preview_delete_config():
-    if params.get_bool("IsOnroad"):
-      return jsonify({"error": "Cannot change PiP Preview configuration while driving."}), 409
     params.put("PIPPreviewMask", {})
     params.put_bool("PIPPreviewEnabled", False)
     update_starpilot_toggles()

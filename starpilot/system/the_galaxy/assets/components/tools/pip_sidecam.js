@@ -385,8 +385,8 @@ export function PipSideCamera() {
           <div class="v-asm-card v-asm-card-danger">
             <div class="v-asm-card-title">Setup</div>
             <ul class="v-asm-card-list">
-              <li>Click "Set Left Center", then click the driver's side window; repeat for the right window</li>
-              <li>From the driver camera, the car's LEFT window appears on the right side of the image and vice versa</li>
+              <li>Click "Set Left Center", then click the left side of the image where the driver's side window is; repeat for the right</li>
+              <li>The preview auto-assigns each point to the correct bubble (the driver camera is a mirror, so left/right is swapped internally)</li>
               <li>The zoom slider applies to BOTH windows so the preview stays consistent</li>
               <li>At least one window center is required to enable the preview</li>
             </ul>
