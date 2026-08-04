@@ -280,7 +280,9 @@ ensure_host_python_extensions() {
     common/params_pyx.so \
     common/transformations/transformations.so \
     msgq_repo/msgq/ipc_pyx.so \
-    msgq_repo/msgq/visionipc/visionipc_pyx.so
+    msgq_repo/msgq/visionipc/visionipc_pyx.so \
+    selfdrive/controls/lib/longitudinal_mpc_lib/c_generated_code/acados_ocp_solver_pyx.so \
+    selfdrive/controls/lib/lateral_mpc_lib/c_generated_code/acados_ocp_solver_pyx.so
 }
 
 sync_host_generated_headers() {
@@ -465,6 +467,7 @@ launch_c3() {
   fi
 
   sync_worktree
+  ensure_host_python_extensions
   run_in_worktree "${WORK_DIR}/scripts/launch_ui_desktop.sh" "${jobs}" "$@"
 }
 
@@ -477,6 +480,7 @@ launch_c4() {
   fi
 
   sync_worktree
+  ensure_host_python_extensions
   run_in_worktree "${WORK_DIR}/scripts/launch_ui_c4_desktop.sh" "${jobs}" "$@"
 }
 
@@ -489,6 +493,7 @@ launch_raybig() {
   fi
 
   sync_worktree
+  ensure_host_python_extensions
   run_in_worktree "${WORK_DIR}/scripts/launch_ui_raybig_desktop.sh" "${jobs}" "$@"
 }
 
@@ -501,6 +506,7 @@ launch_onroad() {
   fi
 
   sync_worktree
+  ensure_host_python_extensions
   run_in_worktree "${WORK_DIR}/scripts/launch_onroad_desktop.sh" "${jobs}" "$@"
 }
 
