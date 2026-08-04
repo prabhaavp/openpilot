@@ -15,6 +15,7 @@ from openpilot.selfdrive.ui.onroad.starpilot.widgets import (
 )
 from openpilot.selfdrive.ui.onroad.starpilot.stopping_point import render_stopping_point
 from openpilot.selfdrive.ui.onroad.starpilot.pause_indicators import render_lateral_paused, render_longitudinal_paused
+from openpilot.selfdrive.ui.onroad.starpilot.pip_sidecam import PipSideCamera
 from openpilot.selfdrive.ui.onroad.starpilot.weather_icon import render_weather_icon
 from openpilot.selfdrive.ui.lib.starpilot_status import (
   get_screen_edge_color, ENGAGED_COLOR,
@@ -40,6 +41,8 @@ class StarPilotOnroadView(AugmentedRoadView):
     self._min_fps = 99.9
     self._max_fps = 0.0
     self._avg_fps = 0.0
+
+    self._pip_sidecam = PipSideCamera()
 
     self.layout_manager = WidgetLayoutManager(self._content_rect)
 
@@ -94,6 +97,9 @@ class StarPilotOnroadView(AugmentedRoadView):
     if self._draw_road_overlays:
       self._render_path_features(self._content_rect)
 
+    # PiP renders last so it always sits on top of every other on-road overlay.
+    self._pip_sidecam.render(self._content_rect)
+
   def _draw_border(self, rect: rl.Rectangle):
     border_width = self._get_border_width()
     rl.draw_rectangle_rounded_lines_ex(rect, 0.12, 10, border_width, rl.BLACK)
@@ -131,8 +137,8 @@ class StarPilotOnroadView(AugmentedRoadView):
     if ui_state.sm['controlsState'].lateralControlState.which() == 'angleState':
       return
     rl.begin_scissor_mode(
-      int(self._content_rect.x), int(self._content_rect.y),
-      int(self._content_rect.width), int(self._content_rect.height),
+      int(round(self._content_rect.x)), int(round(self._content_rect.y)),
+      int(round(self._content_rect.width)), int(round(self._content_rect.height)),
     )
     self._torque_bar.render(self._content_rect)
     rl.end_scissor_mode()
@@ -146,8 +152,8 @@ class StarPilotOnroadView(AugmentedRoadView):
       return
 
     rl.begin_scissor_mode(
-      int(rect.x), int(rect.y),
-      int(rect.width), int(rect.height),
+      int(round(rect.x)), int(round(rect.y)),
+      int(round(rect.width)), int(round(rect.height)),
     )
 
     # Path edges (always rendered if track_edge_vertices exist)

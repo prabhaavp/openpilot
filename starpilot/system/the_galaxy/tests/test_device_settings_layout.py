@@ -142,3 +142,21 @@ def test_vasm_is_default_off_and_configured_only_in_galaxy():
     REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/lateral.py",
   )
   assert all("VASM" not in path.read_text(encoding="utf-8") for path in physical_settings)
+
+
+def test_pip_preview_is_default_off_and_configured_only_in_galaxy():
+  sections = _params_by_section(_layout())
+  bsm = sections["Blind Spot Monitoring"]
+
+  assert {"PIPPreviewEnabled", "PIPPreviewShowOnBlinker", "PIPPreviewShowOnBSM"} <= bsm.keys()
+  assert _declared_default("PIPPreviewEnabled") == "0"
+  assert _declared_default("PIPPreviewShowOnBlinker") == "0"
+  assert _declared_default("PIPPreviewShowOnBSM") == "0"
+
+  physical_settings = (
+    REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/aethergrid.py",
+    REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/lateral.py",
+    REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/appearance.py",
+    REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/sounds.py",
+  )
+  assert all("PIPPreview" not in path.read_text(encoding="utf-8") for path in physical_settings)
