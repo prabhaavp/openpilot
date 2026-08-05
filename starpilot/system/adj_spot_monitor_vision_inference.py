@@ -5,13 +5,9 @@ import cv2
 import numpy as np
 
 _ASSETS = Path(__file__).resolve().parents[1] / "assets" / "vision_models"
-# The bundled export keeps 299 final candidates so OpenCV's TopK importer can load it.
 V_ASM_MODEL_PATH = _ASSETS / "v_asm_model.onnx"
 
-MODEL_INPUT_H = 256
-MODEL_INPUT_W = 352
-HYSTERESIS_ON = 0.65
-HYSTERESIS_OFF = 0.25
+MODEL_INPUT_SIZE = 352
 
 
 class VASMInference:
@@ -114,7 +110,7 @@ class VASMInference:
         self.bboxes[f"{side}_raw"] = None
         self.bboxes[side] = None
 
-  def _run_inference(self, raw_image, height, side):
+  def _run_inference(self, raw_image, height, side) -> float:
     bbox = self.bboxes[side]
     if bbox is None or self.net is None:
       return 0.0
@@ -131,9 +127,15 @@ class VASMInference:
     if self.masks[side] is not None:
       crop_rgb = cv2.bitwise_and(crop_rgb, crop_rgb, mask=self.masks[side])
 
-    # Preprocess -> NCHW Float32 [0.0 - 1.0]
-    resized = cv2.resize(crop_rgb, (MODEL_INPUT_W, MODEL_INPUT_H), interpolation=cv2.INTER_LINEAR)
-    blob = resized.astype(np.float32) / 255.0
+    rs = MODEL_INPUT_SIZE
+    ch, cw = crop_rgb.shape[:2]
+    scale = rs / float(min(ch, cw))
+    nh, nw = int(round(ch * scale)), int(round(cw * scale))
+    resized = cv2.resize(crop_rgb, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    y0 = max(0, (nh - rs) // 2)
+    x0 = max(0, (nw - rs) // 2)
+    crop_sq = resized[y0:y0 + rs, x0:x0 + rs]
+    blob = crop_sq.astype(np.float32) / 255.0
     blob = np.transpose(blob, (2, 0, 1))
     blob = np.expand_dims(blob, axis=0)
 
@@ -141,50 +143,47 @@ class VASMInference:
     out = self.net.forward()
 
     preds = np.squeeze(out)
-    if preds.ndim == 2:
-      if preds.shape[0] < preds.shape[1]:
-        preds = preds.T
-      if preds.shape[1] >= 6:
-        is_class_0 = (np.round(preds[:, 5]).astype(int) == 0)
-        relevant = preds[is_class_0]
-        if len(relevant) == 0:
-          return 0.0
-        return float(np.max(relevant[:, 4]))
-      elif preds.shape[1] >= 5:
-        return float(np.max(preds[:, 4]))
-      else:
-        return float(np.max(preds[:, 0]))
-    elif preds.ndim == 1 and preds.size > 0:
-      return float(np.max(preds))
+
+    # return class 1 (1_car) directly.
+    if preds.ndim >= 1 and preds.size > 0:
+      return float(preds[1]) if len(preds) > 1 else float(preds[0])
+
     return 0.0
 
-  def update(self, raw_image, width, height, dt, conf_thresh, smooth_sec, side_to_infer):
+  def update(self, raw_image, width, height, dt, conf_thresh, smooth_sec, side_to_infer, conf_hold_off=None):
     if not self._valid:
       return False, False
+
+    if conf_hold_off is None:
+      conf_hold_off = conf_thresh * 0.85
 
     self._prepare_geometry(height, width)
     alpha = min(1.0, dt / max(smooth_sec, 0.001))
 
     raw_conf = self._run_inference(raw_image, height, side_to_infer)
+
     if side_to_infer == "left":
-      if raw_conf >= conf_thresh:
-        self._l_score = min(1.0, self._l_score + alpha)
-      else:
-        self._l_score = max(0.0, self._l_score - alpha)
       self.left_confidence = raw_conf
-      if self._l_score >= HYSTERESIS_ON:
-        self.left_active = True
-      elif self._l_score <= HYSTERESIS_OFF:
-        self.left_active = False
-    else:
-      if raw_conf >= conf_thresh:
-        self._r_score = min(1.0, self._r_score + alpha)
+      # Exponential Moving Average Smoothing
+      self._l_score = (1.0 - alpha) * self._l_score + alpha * raw_conf
+
+      # Dual-Threshold Hysteresis Logic
+      if not self.left_active:
+        if self._l_score >= conf_thresh:
+          self.left_active = True
       else:
-        self._r_score = max(0.0, self._r_score - alpha)
+        if self._l_score < conf_hold_off:
+          self.left_active = False
+
+    else:
       self.right_confidence = raw_conf
-      if self._r_score >= HYSTERESIS_ON:
-        self.right_active = True
-      elif self._r_score <= HYSTERESIS_OFF:
-        self.right_active = False
+      self._r_score = (1.0 - alpha) * self._r_score + alpha * raw_conf
+
+      if not self.right_active:
+        if self._r_score >= conf_thresh:
+          self.right_active = True
+      else:
+        if self._r_score < conf_hold_off:
+          self.right_active = False
 
     return self.left_active, self.right_active
