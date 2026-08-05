@@ -96,6 +96,9 @@ class VASMInference:
       bw = max(2, min(((bw + 1) // 2) * 2, w - bx))
       bh = max(2, min(((bh + 1) // 2) * 2, h - by))
 
+      bw = (bw // 2) * 2
+      bh = (bh // 2) * 2
+
       self.bboxes[side] = (bx, by, bw, bh)
 
       mask = np.zeros((bh, bw), dtype=np.uint8)
@@ -117,9 +120,14 @@ class VASMInference:
     if self.masks[side] is not None:
       crop_rgb = cv2.bitwise_and(crop_rgb, crop_rgb, mask=self.masks[side])
 
-    crop_sq = cv2.resize(
-        crop_rgb, (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE), interpolation=cv2.INTER_LINEAR
-    )
+    rs = MODEL_INPUT_SIZE
+    ch, cw = crop_rgb.shape[:2]
+    scale = rs / float(min(ch, cw))
+    nh, nw = int(round(ch * scale)), int(round(cw * scale))
+    resized = cv2.resize(crop_rgb, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    y0 = max(0, (nh - rs) // 2)
+    x0 = max(0, (nw - rs) // 2)
+    crop_sq = resized[y0 : y0 + rs, x0 : x0 + rs]
 
     blob = crop_sq.astype(np.float32) / 255.0
     blob = np.transpose(blob, (2, 0, 1))
@@ -129,10 +137,9 @@ class VASMInference:
     out = self.net.forward()
 
     preds = np.squeeze(out)
+
     if preds.ndim >= 1 and preds.size > 0:
-      exp_p = np.exp(preds - np.max(preds))
-      softmax_p = exp_p / np.sum(exp_p)
-      return float(softmax_p[1]) if len(softmax_p) > 1 else float(softmax_p[0])
+      return float(preds[1]) if len(preds) > 1 else float(preds[0])
 
     return 0.0
 
