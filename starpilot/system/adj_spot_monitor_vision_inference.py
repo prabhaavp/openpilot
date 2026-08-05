@@ -57,7 +57,20 @@ class VASMInference:
   def configured_sides(self):
     return tuple(side for side in ("left", "right") if self.bboxes.get(f"{side}_raw") is not None)
 
-  def _prepare_geometry(self, h, w):
+  def load_config(self, config: dict):
+    self.frame_res = (0, 0)
+    self.config_width = config.get("width", 0)
+    self.config_height = config.get("height", 0)
+
+    for side in ("left", "right"):
+      poly = config.get(f"poly_{side}", [])
+      if len(poly) >= 3:
+        self.bboxes[f"{side}_raw"] = np.array(poly, dtype=np.float32)
+      else:
+        self.bboxes[f"{side}_raw"] = None
+        self.bboxes[side] = None
+
+  def _prepare_geometry(self, h: int, w: int):
     if (h, w) == self.frame_res:
       return
     self.frame_res = (h, w)
@@ -78,18 +91,10 @@ class VASMInference:
 
       bx, by, bw, bh = cv2.boundingRect(pts.astype(np.int32))
 
-      bx = (bx // 2) * 2
-      by = (by // 2) * 2
-      bw = ((bw + 1) // 2) * 2
-      bh = ((bh + 1) // 2) * 2
-
-      bx = max(0, min(bx, w - 2))
-      by = max(0, min(by, h - 2))
-      bw = max(2, min(bw, w - bx))
-      bh = max(2, min(bh, h - by))
-
-      bw = (bw // 2) * 2
-      bh = (bh // 2) * 2
+      bx = max(0, min((bx // 2) * 2, w - 2))
+      by = max(0, min((by // 2) * 2, h - 2))
+      bw = max(2, min(((bw + 1) // 2) * 2, w - bx))
+      bh = max(2, min(((bh + 1) // 2) * 2, h - by))
 
       self.bboxes[side] = (bx, by, bw, bh)
 
@@ -97,44 +102,25 @@ class VASMInference:
       cv2.fillPoly(mask, [pts.astype(np.int32) - [bx, by]], 255)
       self.masks[side] = mask
 
-  def load_config(self, config: dict):
-    self.frame_res = (0, 0)
-    self.config_width = config.get("width", 0)
-    self.config_height = config.get("height", 0)
-
-    for side in ("left", "right"):
-      poly = config.get(f"poly_{side}", [])
-      if len(poly) >= 3:
-        self.bboxes[f"{side}_raw"] = np.array(poly, dtype=np.float32)
-      else:
-        self.bboxes[f"{side}_raw"] = None
-        self.bboxes[side] = None
-
-  def _run_inference(self, raw_image, height, side) -> float:
+  def _run_inference(self, raw_image: np.ndarray, height: int, side: str) -> float:
     bbox = self.bboxes[side]
     if bbox is None or self.net is None:
       return 0.0
 
     x, y, w, h = bbox
 
-    # Slice NV12 directly
-    y_crop = raw_image[y: y + h, x: x + w]
-    uv_crop = raw_image[height + y // 2: height + (y + h) // 2, x: x + w]
+    y_crop = raw_image[y : y + h, x : x + w]
+    uv_crop = raw_image[height + y // 2 : height + (y + h) // 2, x : x + w]
     nv12_crop = np.vstack([y_crop, uv_crop])
 
-    # Convert cropped area directly from YUV NV12 to RGB (1-step, avoids double conversion)
     crop_rgb = cv2.cvtColor(nv12_crop, cv2.COLOR_YUV2RGB_NV12)
     if self.masks[side] is not None:
       crop_rgb = cv2.bitwise_and(crop_rgb, crop_rgb, mask=self.masks[side])
 
-    rs = MODEL_INPUT_SIZE
-    ch, cw = crop_rgb.shape[:2]
-    scale = rs / float(min(ch, cw))
-    nh, nw = int(round(ch * scale)), int(round(cw * scale))
-    resized = cv2.resize(crop_rgb, (nw, nh), interpolation=cv2.INTER_LINEAR)
-    y0 = max(0, (nh - rs) // 2)
-    x0 = max(0, (nw - rs) // 2)
-    crop_sq = resized[y0:y0 + rs, x0:x0 + rs]
+    crop_sq = cv2.resize(
+        crop_rgb, (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE), interpolation=cv2.INTER_LINEAR
+    )
+
     blob = crop_sq.astype(np.float32) / 255.0
     blob = np.transpose(blob, (2, 0, 1))
     blob = np.expand_dims(blob, axis=0)
@@ -143,14 +129,24 @@ class VASMInference:
     out = self.net.forward()
 
     preds = np.squeeze(out)
-
-    # return class 1 (1_car) directly.
     if preds.ndim >= 1 and preds.size > 0:
-      return float(preds[1]) if len(preds) > 1 else float(preds[0])
+      exp_p = np.exp(preds - np.max(preds))
+      softmax_p = exp_p / np.sum(exp_p)
+      return float(softmax_p[1]) if len(softmax_p) > 1 else float(softmax_p[0])
 
     return 0.0
 
-  def update(self, raw_image, width, height, dt, conf_thresh, smooth_sec, side_to_infer, conf_hold_off=None):
+  def update(
+      self,
+      raw_image: np.ndarray,
+      width: int,
+      height: int,
+      dt: float,
+      conf_thresh: float,
+      smooth_sec: float,
+      side_to_infer: str,
+      conf_hold_off: float | None = None,
+  ) -> tuple[bool, bool]:
     if not self._valid:
       return False, False
 
