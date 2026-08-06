@@ -78,9 +78,9 @@ class VASMDaemon:
   def _cache_params(self):
     self._enabled = self.params.get_bool("VASMEnabled")
     self._slv_enabled = self.params.get_bool("VisionSpeedLimitDetection")
-    confidence_threshold = self.params.get_float("VASMConfidenceThreshold") or 0.95
+    confidence_threshold = self.params.get_float("VASMConfidenceThreshold") or 0.98
     smooth_seconds = self.params.get_float("VASMSmoothSeconds") or 0.2
-    self._conf_thresh = min(max(confidence_threshold, 0.25), 1.0)
+    self._conf_thresh = min(max(confidence_threshold, 0.8), 1.0)
     self._smooth_sec = min(max(smooth_seconds, 0.1), 0.5)
     self._conf_hold_off = self._conf_thresh * 0.85
 

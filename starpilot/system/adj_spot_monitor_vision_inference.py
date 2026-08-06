@@ -23,7 +23,12 @@ class VASMInference:
     self.config_width = 0
     self.config_height = 0
     self.masks = {"left": None, "right": None}
-    self.bboxes = {"left": None, "right": None, "left_raw": None, "right_raw": None}
+    self.bboxes = {
+        "left": None,
+        "right": None,
+        "left_raw": None,
+        "right_raw": None,
+    }
 
   def load(self) -> bool:
     if not self.model_path.is_file():
@@ -55,7 +60,11 @@ class VASMInference:
 
   @property
   def configured_sides(self):
-    return tuple(side for side in ("left", "right") if self.bboxes.get(f"{side}_raw") is not None)
+    return tuple(
+        side
+        for side in ("left", "right")
+        if self.bboxes.get(f"{side}_raw") is not None
+    )
 
   def load_config(self, config: dict):
     self.frame_res = (0, 0)
@@ -122,12 +131,14 @@ class VASMInference:
 
     rs = MODEL_INPUT_SIZE
     ch, cw = crop_rgb.shape[:2]
-    scale = rs / float(min(ch, cw))
+    scale = rs / float(max(ch, cw))
     nh, nw = int(round(ch * scale)), int(round(cw * scale))
     resized = cv2.resize(crop_rgb, (nw, nh), interpolation=cv2.INTER_LINEAR)
-    y0 = max(0, (nh - rs) // 2)
-    x0 = max(0, (nw - rs) // 2)
-    crop_sq = resized[y0 : y0 + rs, x0 : x0 + rs]
+
+    crop_sq = np.zeros((rs, rs, 3), dtype=np.uint8)
+    top = (rs - nh) // 2
+    left = (rs - nw) // 2
+    crop_sq[top : top + nh, left : left + nw] = resized
 
     blob = crop_sq.astype(np.float32) / 255.0
     blob = np.transpose(blob, (2, 0, 1))
