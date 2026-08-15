@@ -5,12 +5,11 @@ import wave
 
 from pathlib import Path
 
-from cereal import car, custom, log, messaging
+from cereal import custom, log, messaging
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
-from openpilot.common.utils import retry
 from openpilot.common.swaglog import cloudlog
 
 from openpilot.system import micd
@@ -19,7 +18,7 @@ from openpilot.system.hardware import HARDWARE
 from openpilot.starpilot.common.starpilot_variables import ACTIVE_THEME_PATH, ERROR_LOGS_PATH, RANDOM_EVENTS_PATH, get_starpilot_toggles
 
 SAMPLE_RATE = 48000
-SAMPLE_BUFFER = 4096 # (approx 100ms)
+SAMPLE_BUFFER = 8192 # (approx 170ms) headroom so boot-time CPU load can't underflow the Python callback
 MAX_VOLUME = 1.0
 MIN_VOLUME = 0.1
 SELFDRIVE_STATE_TIMEOUT = 5 # 5 seconds
@@ -27,6 +26,14 @@ FILTER_DT = 1. / (micd.SAMPLE_RATE / micd.FFT_SAMPLES)
 
 AMBIENT_DB = 30 # DB where MIN_VOLUME is applied
 DB_SCALE = 30 # AMBIENT_DB + DB_SCALE is where MAX_VOLUME is applied
+
+# Boot-time audio device readiness
+OUTPUT_DEVICE_WAIT_TIMEOUT = 60.0  # max seconds to wait for the default output device to appear
+OUTPUT_DEVICE_POLL_INTERVAL = 1.0
+
+# Self-heal: restart the stream once if it underflows repeatedly after start
+UNDERFLOW_RESTART_WINDOW = 30.0  # seconds
+UNDERFLOW_RESTART_THRESHOLD = 3  # underflows within the window
 
 VOLUME_BASE = 20
 if HARDWARE.get_device_type() in ("tici", "tizi"):
@@ -94,6 +101,9 @@ class Soundd:
     self.current_alert_type = ""
     self.current_volume = MIN_VOLUME
     self.current_sound_frame = 0
+
+    self._underflow_times: list[float] = []
+    self._underflow_restart_used = False
 
     self.selfdrive_timeout_alert = False
 
@@ -186,9 +196,10 @@ class Soundd:
 
     return ret * self.current_volume
 
-  def callback(self, data_out: np.ndarray, frames: int, time, status) -> None:
+  def callback(self, data_out: np.ndarray, frames: int, _time, status) -> None:
     if status:
       cloudlog.warning(f"soundd stream over/underflow: {status}")
+      self._underflow_times.append(time.monotonic())
     data_out[:frames, 0] = self.get_sound_data(frames)
 
   def update_alert(self, new_alert):
@@ -249,18 +260,53 @@ class Soundd:
     volume = ((weighted_db - AMBIENT_DB) / DB_SCALE) * (MAX_VOLUME - MIN_VOLUME) + MIN_VOLUME
     return math.pow(VOLUME_BASE, (np.clip(volume, MIN_VOLUME, MAX_VOLUME) - 1))
 
-  @retry(attempts=10, delay=3)
+  def _wait_for_output_device(self, sd, timeout=OUTPUT_DEVICE_WAIT_TIMEOUT):
+    """Wait until PortAudio reports a usable output device.
+
+    At boot the audio device may not be registered yet, which makes
+    OutputStream() raise PortAudioError("Error querying device -1").
+    """
+    deadline = time.monotonic() + timeout
+    waiting = False
+    while True:
+      try:
+        for info in sd.query_devices():
+          if info.get("max_output_channels", 0) > 0:
+            if waiting:
+              cloudlog.info("soundd: audio output device ready")
+            return
+      except Exception:
+        pass
+      if time.monotonic() >= deadline:
+        raise sd.PortAudioError(f"no usable output device after {timeout:.0f}s")
+      if not waiting:
+        waiting = True
+        cloudlog.info("soundd: waiting for audio output device")
+      time.sleep(OUTPUT_DEVICE_POLL_INTERVAL)
+
   def get_stream(self, sd):
     # reload sounddevice to reinitialize portaudio
     sd._terminate()
     sd._initialize()
+    self._wait_for_output_device(sd)
     return sd.OutputStream(channels=1, samplerate=SAMPLE_RATE, callback=self.callback, blocksize=SAMPLE_BUFFER)
 
   def start_stream(self, sd):
+    self._underflow_restart_used = False
+    self._underflow_times = []
     stream = self.get_stream(sd)
     stream.start()
     cloudlog.info(f"soundd stream started: {stream.samplerate=} {stream.channels=} {stream.dtype=} {stream.device=}, {stream.blocksize=}")
     return stream
+
+  def _should_restart_stream(self):
+    if self._underflow_restart_used:
+      return False
+    now = time.monotonic()
+    cutoff = now - UNDERFLOW_RESTART_WINDOW
+    while self._underflow_times and self._underflow_times[0] < cutoff:
+      self._underflow_times.pop(0)
+    return len(self._underflow_times) >= UNDERFLOW_RESTART_THRESHOLD and self.current_alert == AudibleAlert.none
 
   def describe_stream(self, stream) -> str:
     attrs = {
@@ -311,6 +357,14 @@ class Soundd:
 
           if not stream.active:
             raise RuntimeError(f"soundd stream inactive: {self.describe_stream(stream)}")
+
+          # Self-heal: a marginal boot stream may underflow repeatedly right after
+          # start. Restart it once (when idle) instead of letting it distort audio.
+          if self._should_restart_stream():
+            self._underflow_restart_used = True
+            self._underflow_times = []
+            cloudlog.warning("soundd: repeated output underflows, restarting stream")
+            break
 
           starpilot_toggles = get_starpilot_toggles(sm)
           if starpilot_toggles != self.starpilot_toggles:
@@ -366,11 +420,6 @@ class Soundd:
 
       self.previous_sound_pack = self.starpilot_toggles.sound_pack
       self.previous_sound_source_signature = sound_source_signature
-
-      if stream is not None:
-        stream.close()
-        stream = self.get_stream(sd)
-        stream.start()
 
     return stream
 
