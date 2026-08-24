@@ -266,6 +266,7 @@ class PipSideCamera(Widget):
     self._enabled = self._params.get_bool("PIPPreviewEnabled") and self._params.get_bool("GalaxyDeveloperMode")
     self._show_on_blinker = self._params.get_bool("PIPPreviewShowOnBlinker")
     self._show_on_bsm = self._params.get_bool("PIPPreviewShowOnBSM")
+    self._flip_x_value[0] = 0 if self._params.get_bool("PIPPreviewInvert") else 1
     try:
       raw = self._params.get("PIPPreviewMask")
       if isinstance(raw, (bytes, str)):
