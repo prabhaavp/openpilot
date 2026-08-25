@@ -175,6 +175,23 @@ def test_lateral_resume_delay_ignores_signal_cycles_that_never_slow_enough(monke
     planner.shutdown()
 
 
+def test_hybrid_mode_runs_continuous_controller(monkeypatch):
+  planner = make_planner(monkeypatch)
+  monkeypatch.setattr(planner.starpilot_cem, "update", lambda *args, **kwargs: None)
+
+  try:
+    toggles = make_toggles(hybrid_experimental_mode=True)
+
+    planner.update(0.0, False, make_sm(planner, frame=1, v_ego=20.0, left_blinker=False), toggles)
+
+    assert planner.hybrid_controller is not None
+    assert planner.hybrid_acceleration != 0.0
+    assert planner.starpilot_ccm.experimental_mode is False
+    assert planner.starpilot_cem.experimental_mode is False
+  finally:
+    planner.shutdown()
+
+
 def test_radarless_follow_hold_applies_to_tracked_vision_lead(monkeypatch):
   planner = StarPilotPlanner(Path("/tmp/nonexistent"), DummyThemeManager())
 

@@ -1523,6 +1523,7 @@ _TROUBLESHOOT_PERSONALITY_KEYS = [
 
 _TROUBLESHOOT_CEM_KEYS = [
   "ConditionalExperimental",
+  "HybridExperimental",
   "CESpeed",
   "CESpeedLead",
   "CECurves",
@@ -5201,15 +5202,16 @@ def setup(app):
           "updated": updated,
         }), 200
 
-      if key in {"ConditionalExperimental", "ConditionalChill"}:
+      if key in {"ConditionalExperimental", "ConditionalChill", "HybridExperimental"}:
         enabled = str_val.strip() in ("1", "true", "True")
         params.put_bool(key, enabled)
 
         updated = {key: enabled}
         if enabled:
-          other_key = "ConditionalChill" if key == "ConditionalExperimental" else "ConditionalExperimental"
-          params.put_bool(other_key, False)
-          updated[other_key] = False
+          for other_key in ("ConditionalExperimental", "ConditionalChill", "HybridExperimental"):
+            if other_key != key:
+              params.put_bool(other_key, False)
+              updated[other_key] = False
 
         update_starpilot_toggles()
         return jsonify({

@@ -3,16 +3,18 @@ from types import SimpleNamespace
 from openpilot.selfdrive.ui.lib.starpilot_status import (
   DISENGAGED_COLOR,
   ENGAGED_COLOR,
+  HYBRID_EXPERIMENTAL_COLOR,
   LONGITUDINAL_ONLY_COLOR,
   AOL_COLOR,
   OVERRIDE_COLOR,
   get_border_color,
+  get_path_edge_color,
   get_screen_edge_color,
 )
 from openpilot.selfdrive.ui.ui_state import UIStatus
 
 
-def _state(*, enabled=False, lat_active=False, aol=False, status=None, events=()):
+def _state(*, enabled=False, lat_active=False, aol=False, status=None, events=(), hybrid=False):
   return SimpleNamespace(
     sm={
       "selfdriveState": SimpleNamespace(enabled=enabled, experimentalMode=False),
@@ -24,6 +26,7 @@ def _state(*, enabled=False, lat_active=False, aol=False, status=None, events=()
     switchback_mode_enabled=False,
     traffic_mode_enabled=False,
     conditional_status=0,
+    starpilot_toggles={"hybrid_experimental_mode": hybrid},
   )
 
 
@@ -42,6 +45,19 @@ def test_lateral_active_colors_remain_unchanged():
   assert _rgb(get_border_color(_state(enabled=True, lat_active=True))) == _rgb(ENGAGED_COLOR)
   assert _rgb(get_border_color(_state(aol=True))) == _rgb(AOL_COLOR)
   assert _rgb(get_border_color(_state())) == _rgb(DISENGAGED_COLOR)
+
+
+def test_hybrid_experimental_mode_uses_purple_border():
+  state = _state(enabled=True, hybrid=True)
+
+  assert _rgb(get_border_color(state)) == _rgb(HYBRID_EXPERIMENTAL_COLOR)
+  assert _rgb(get_screen_edge_color(state)) == _rgb(HYBRID_EXPERIMENTAL_COLOR)
+  assert _rgb(get_path_edge_color(state)) == _rgb(HYBRID_EXPERIMENTAL_COLOR)
+
+
+def test_hybrid_experimental_mode_requires_enabled():
+  assert _rgb(get_border_color(_state(hybrid=True))) == _rgb(DISENGAGED_COLOR)
+  assert _rgb(get_border_color(_state(enabled=True))) == _rgb(ENGAGED_COLOR)
 
 
 def test_override_color_matches_active_control_mode():

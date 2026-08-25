@@ -9,6 +9,7 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.starpilot.common.model_versions import is_tinygrad_model_version
+from openpilot.starpilot.controls.lib.hybrid_experimental_mode import HybridExperimentalMode
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import desired_follow_distance
@@ -596,6 +597,7 @@ class LongitudinalPlanner:
     self.duplicate_vision_comfort_lead_source = None
     self.prev_experimental_mode = None
     self.experimental_release_accel_until = 0.0
+    self.hybrid_controller = HybridExperimentalMode()
 
     if self.is_preap:
       try:
@@ -1936,6 +1938,7 @@ class LongitudinalPlanner:
       self.a_desired = np.clip(sm['carState'].aEgo, accel_limits[0], accel_limits[1])
       self.model_allow_throttle = True
       self.model_allow_throttle_transition_t = 0.0
+      self.hybrid_controller.reset(float(self.a_desired))
 
     # Prevent divergence, smooth in current v_ego
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
@@ -2284,25 +2287,41 @@ class LongitudinalPlanner:
       model_launch_accel = self.get_model_launch_accel(model_launch_v, model_launch_a, action_t, scene_v_ego)
 
     if classic_model:
-      output_a_target, output_should_stop = get_accel_from_plan_classic(
+      output_a_target_mpc, output_should_stop_mpc = get_accel_from_plan_classic(
         self.CP, self.v_desired_trajectory, self.a_desired_trajectory, starpilot_toggles.vEgoStopping)
     elif tinygrad_model:
       output_a_target_mpc, output_should_stop_mpc = get_accel_from_plan(
         self.v_desired_trajectory, self.a_desired_trajectory,
         action_t=action_t, vEgoStopping=starpilot_toggles.vEgoStopping)
-      output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
-      output_should_stop_e2e = sm['modelV2'].action.shouldStop
-
-      if self.mode == 'acc' or self.generation == 'v9':
-        output_a_target = output_a_target_mpc
-        output_should_stop = output_should_stop_mpc
-      else:
-        output_a_target = min(output_a_target_mpc, output_a_target_e2e)
-        output_should_stop = output_should_stop_e2e or output_should_stop_mpc
     else:
-      output_a_target, output_should_stop = get_accel_from_plan(
+      output_a_target_mpc, output_should_stop_mpc = get_accel_from_plan(
         self.v_desired_trajectory, self.a_desired_trajectory,
         action_t=action_t, vEgoStopping=starpilot_toggles.vEgoStopping)
+
+    if bool(getattr(starpilot_toggles, "hybrid_experimental_mode", False)):
+      self.hybrid_controller.set_tuning(
+        getattr(starpilot_toggles, "hybrid_exp_bias", 0.0),
+        getattr(starpilot_toggles, "hybrid_vision_brake_sensitivity", 1.0),
+      )
+      output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
+      output_should_stop_e2e = sm['modelV2'].action.shouldStop
+      output_a_target = self.hybrid_controller.update(
+        v_ego=scene_v_ego,
+        v_cruise=v_cruise,
+        lead_one=self.lead_one,
+        model_v2=sm['modelV2'],
+        a_chill=output_a_target_mpc,
+        a_exp=output_a_target_e2e,
+      )
+      output_should_stop = output_should_stop_mpc or output_should_stop_e2e
+    elif tinygrad_model and self.mode != 'acc' and self.generation != 'v9':
+      output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
+      output_should_stop_e2e = sm['modelV2'].action.shouldStop
+      output_a_target = min(output_a_target_mpc, output_a_target_e2e)
+      output_should_stop = output_should_stop_e2e or output_should_stop_mpc
+    else:
+      output_a_target = output_a_target_mpc
+      output_should_stop = output_should_stop_mpc
 
     comfort_output_accel_min = get_vehicle_min_accel(self.CP, v_ego) if experimental_mlsim else accel_limits_turns[0]
     vision_cap_accel_min = min(comfort_output_accel_min, get_vehicle_min_accel(self.CP, v_ego))
