@@ -25,17 +25,18 @@ def smooth_max(a: float, b: float, k: float = 6.0) -> float:
 class HybridExperimentalMode:
   """
   Fuses Chill Mode (radar/lead tracking) and Experimental Mode (vision/stop signs/lights):
-  1. Detects vision stopping intent from trajectory v_min and distance horizon.
+  1. Detects vision stopping intent from trajectory drop and horizon endpoints.
   2. Calculates kinematically required stopping deceleration (-v^2 / 2d).
-  3. Clamps Chill positive throttle during stop events to prevent brake fighting.
-  4. Holds 0 m/s at standstills to prevent creep.
+  3. Clamps Chill positive throttle during stop events to prevent brake fighting/dilution.
+  4. Holds brake at standstills to prevent creep, but releases immediately on green lights or gas tap.
   5. Falls back safely to Chill if lead vehicle distance is compromised.
-  6. Slew-rate limits acceleration to respect vehicle jerk limits.
+  6. Slew-rate limits acceleration to respect vehicle jerk limits, with emergency bypass.
   """
 
-  # Base physical actuator jerk limits (m/s^3)
+  # Physical actuator jerk limits (m/s^3)
   BASE_MAX_JERK_BRAKE = 3.5
   BASE_MAX_JERK_ACCEL = 5.5
+  EMERGENCY_JERK_BRAKE = 14.0
 
   # Base safety floor parameters
   BASE_T_FOLLOW = 1.45
@@ -55,8 +56,9 @@ class HybridExperimentalMode:
     self.jerk_factor = 1.0
     self._update_profile_limits(self.t_follow, self.jerk_factor)
 
-  def reset(self, a: float = 0.0):
-    self.prev_a_target = float(a)
+  def reset(self, a_ego: float = 0.0):
+    """Seed target with actual vehicle acceleration on engagement to prevent torque bumps."""
+    self.prev_a_target = float(a_ego) if np.isfinite(a_ego) else 0.0
     self.exp_authority = 0.5
 
   def set_tuning(self, exp_bias: float, vision_brake_sensitivity: float, t_follow=None, jerk_factor=None):
@@ -84,7 +86,10 @@ class HybridExperimentalMode:
     traj_v = getattr(velocity, "x", None) if velocity is not None else None
     if traj_v is None or len(traj_v) == 0:
       return np.array([v_ego], dtype=float)
-    return np.asarray(traj_v, dtype=float)
+    traj_v = np.asarray(traj_v, dtype=float)
+    if not np.all(np.isfinite(traj_v)):
+      return np.array([v_ego], dtype=float)
+    return traj_v
 
   @staticmethod
   def _get_model_trajectory_x(model_v2) -> np.ndarray:
@@ -92,7 +97,10 @@ class HybridExperimentalMode:
     traj_x = getattr(position, "x", None) if position is not None else None
     if traj_x is None or len(traj_x) == 0:
       return np.array([], dtype=float)
-    return np.asarray(traj_x, dtype=float)
+    traj_x = np.asarray(traj_x, dtype=float)
+    if not np.all(np.isfinite(traj_x)):
+      return np.array([], dtype=float)
+    return traj_x
 
   def update(self, v_ego, v_cruise, lead_one, model_v2, a_chill, a_exp,
              t_follow=None, jerk_factor=None):
@@ -101,6 +109,11 @@ class HybridExperimentalMode:
        (jerk_factor is not None and abs(jerk_factor - self.jerk_factor) > 1e-4):
       self._update_profile_limits(t_follow, jerk_factor)
 
+    if not np.isfinite(a_chill):
+      a_chill = float(self.prev_a_target)
+    if not np.isfinite(a_exp):
+      a_exp = a_chill
+
     lead_status = bool(getattr(lead_one, "status", False))
     lead_d_rel = float(getattr(lead_one, "dRel", 150.0))
 
@@ -108,53 +121,80 @@ class HybridExperimentalMode:
     traj_v = self._get_model_trajectory_v(model_v2, v_ego)
     traj_x = self._get_model_trajectory_x(model_v2)
 
+    v_min = float(np.min(traj_v))
     min_idx = int(np.argmin(traj_v))
-    v_min = float(traj_v[min_idx])
-    d_min = float(traj_x[min_idx]) if len(traj_x) > min_idx else 100.0
+    v_horizon = float(traj_v[-1]) if len(traj_v) > 0 else v_ego
     v_ref = max(v_ego, 2.0)
 
-    # Detect drop anywhere along trajectory (stop sign / red light profile)
+    # Detect deceleration profile or low-speed stop line target
     speed_drop_ratio = max(0.0, (v_ego - v_min) / v_ref)
-    is_stopping_profile = sigmoid(1.5 - v_min, k=4.0, x0=0.0) * sigmoid(v_ego, k=3.0, x0=1.0)
-    model_decel_strength = max(0.0, -a_exp / 2.5)
+    stop_target_active = sigmoid(1.2 - v_horizon, k=4.0, x0=0.0)
+    model_decel_strength = max(0.0, -a_exp / 2.0)
 
-    raw_vision_metric = max(speed_drop_ratio, is_stopping_profile, model_decel_strength)
+    raw_vision_metric = max(speed_drop_ratio, stop_target_active, model_decel_strength)
     w_vision = float(np.clip(raw_vision_metric * self.VISION_BRAKE_SENSITIVITY, 0.0, 1.0))
 
-    # Calculate actual kinematic braking required to stop at the detected stop line
-    if v_min < 1.2 and v_ego > 1.0 and d_min > 0.5:
-      # Kinematic decel: -v^2 / (2 * d) with 2.0m stop line cushion
-      d_stop_effective = max(d_min - 2.0, 1.5)
-      a_kinematic_stop = - (v_ego ** 2) / (2.0 * d_stop_effective)
+    # Kinematic stopping calculation when approaching a stop line
+    if v_min < 1.2 and v_horizon < 2.0 and v_ego > 0.1 and len(traj_x) > min_idx and traj_x[min_idx] > 0.2:
+      d_min = float(traj_x[min_idx])
+      d_stop_effective = max(d_min - 1.5, 2.0)
+      a_kinematic_stop = float(np.clip(- (v_ego ** 2) / (2.0 * d_stop_effective), -3.5, 0.0))
+      if d_stop_effective < 6.0 and v_ego < 3.0:
+        a_kinematic_stop = min(a_kinematic_stop, -0.6)
       a_exp_effective = min(a_exp, a_kinematic_stop)
+    elif v_horizon < 1.0 and v_ego > 0.05:
+      # Final roll-in: enforce negative acceleration to complete stop
+      a_exp_effective = min(a_exp, -0.5)
     else:
       a_exp_effective = a_exp
 
-    # Dynamic Exp Authority: scales directly to 100% when vision intent is high
     base_auth = float(np.clip(0.5 + (0.35 * self.HYBRID_EXP_BIAS), 0.0, 1.0))
     alpha_exp = lerp(base_auth, 1.0, w_vision)
     self.exp_authority = alpha_exp
 
     # 2. ACCELERATION FUSION (Throttle vs Braking Regimes)
-    # Throttle Regime: Snappy pickup on open roads
-    a_throttle_optimal = smooth_max(a_chill, a_exp, k=4.0)
+    # Throttle Regime: Snappy pickup on open roads with clean cruise setpoint clamp
+    a_throttle_raw = smooth_max(a_chill, a_exp, k=4.0)
+    if v_ego >= v_cruise:
+      a_throttle_optimal = min(a_throttle_raw, a_chill)
+    else:
+      overshoot_risk = sigmoid(v_ego - v_cruise, k=4.0, x0=-1.0)
+      a_throttle_capped = min(a_throttle_raw, max(0.0, a_chill))
+      a_throttle_optimal = lerp(a_throttle_raw, a_throttle_capped, overshoot_risk)
+
     a_throttle_conservative = smooth_min(a_chill, a_exp, k=4.0)
     a_throttle_fused = lerp(a_throttle_optimal, a_throttle_conservative, w_vision)
 
-    # Braking Regime: CLAMP Chill to <= 0 so cruise throttle cannot fight the stop!
-    a_chill_brake = min(a_chill, 0.0)
-    a_brake_fused = lerp(a_chill_brake, a_exp_effective, alpha_exp)
+    # Braking Regime: Never dilute Exp stop braking with Chill's 0.0 m/s^2
+    if a_exp_effective < 0.0:
+      a_chill_brake = min(a_chill, 0.0)
+      a_brake_fused = min(a_exp_effective, a_chill_brake) if a_chill_brake < a_exp_effective \
+        else lerp(a_exp_effective, a_chill_brake, 1.0 - alpha_exp)
+    else:
+      a_brake_fused = min(a_chill, a_exp_effective)
 
-    # Regime Selection: If vision sees a stop (w_vision -> 1), FORCE braking regime (w_accel -> 0)
-    phase_metric = smooth_min(a_chill, a_exp, k=4.0)
-    w_accel = sigmoid(phase_metric, k=3.0, x0=-0.1) * (1.0 - w_vision)
+    # Regime Selection: If vision sees a stop or braking is requested, lock out positive throttle
+    is_braking_phase = (w_vision > 0.3) or (a_exp_effective < -0.2) or (a_chill < -0.2)
+    if is_braking_phase:
+      w_accel = 0.0
+    else:
+      phase_metric = smooth_min(a_chill, a_exp, k=4.0)
+      w_accel = sigmoid(phase_metric, k=3.0, x0=-0.1) * (1.0 - w_vision)
+
     a_fused = lerp(a_brake_fused, a_throttle_fused, w_accel)
 
-    # 3. STANDSTILL ANCHOR (Prevent creeping at 0 mph)
+    # 3. STANDSTILL ANCHOR (Hold at 0 mph, release cleanly on green departure or gas tap)
     is_stopped = sigmoid(0.4 - v_ego, k=8.0, x0=0.0)
-    is_min_stopped = sigmoid(0.8 - v_min, k=4.0, x0=0.0)
-    standstill_weight = is_stopped * is_min_stopped
-    a_anchored = lerp(a_fused, smooth_min(a_fused, 0.0, k=8.0), standstill_weight)
+    is_staying_stopped = sigmoid(0.5 - v_horizon, k=6.0, x0=0.0)
+    lead_departing = lead_status and (getattr(lead_one, "vLead", 0.0) > 0.5)
+    vision_departing = (v_horizon > 0.5) and (a_exp > 0.1)
+    driver_departing = (a_chill > 0.4) and (not lead_status or lead_d_rel > 10.0)
+    # A real trajectory still predicting a stop line (red light / stop sign) keeps
+    # the anchor engaged: cruise creep must not release the brake at a stop it can't see.
+    model_stop_predicted = len(traj_v) > 1 and v_horizon < 0.5
+    departing = (lead_departing or vision_departing or driver_departing) and not model_stop_predicted
+    standstill_weight = (0.0 if departing else 1.0) * is_stopped * is_staying_stopped
+    a_anchored = lerp(a_fused, smooth_min(a_fused, -0.5, k=6.0), standstill_weight)
 
     # 4. SAFETY BARRIER (Lead Vehicle Proximity Check)
     d_static_effective = self.D_STATIC_SAFE + max(0.0, 1.5 * (1.0 - (v_ego / 4.0)))
@@ -163,12 +203,25 @@ class HybridExperimentalMode:
     distance_ratio = (lead_d_rel - d_static_effective) / max(d_safe - d_static_effective, 1.0)
     lead_safety_risk = sigmoid(1.0 - distance_ratio, k=5.0, x0=0.0) * float(lead_status)
 
-    a_emergency_brake = smooth_min(a_anchored, a_chill, k=6.0)
-    a_safe = lerp(a_anchored, a_emergency_brake, lead_safety_risk)
+    # Enforce hard ceiling when lead is within safety envelope or Chill is braking for lead
+    lead_safety_active = lead_status and (lead_d_rel < d_safe or a_chill < 0.0)
+    if lead_safety_active and a_chill < a_anchored:
+      a_safe = min(a_anchored, a_chill)
+    else:
+      a_safe = a_anchored
 
-    # 5. ASYMMETRIC SLEW FILTER (Limit Jerk)
-    jerk_limit = self.MAX_JERK_ACCEL if a_safe >= self.prev_a_target else self.MAX_JERK_BRAKE
+    # 5. ASYMMETRIC DIRECTIONAL SLEW FILTER (Limit Jerk)
+    da = a_safe - self.prev_a_target
+    if da >= 0.0:
+      jerk_limit = self.MAX_JERK_ACCEL
+    else:
+      # Bypass comfort brake rate for lead collision or committed vision-stop emergencies.
+      is_lead_emergency = (lead_safety_risk > 0.5) and (a_chill < -1.5)
+      is_vision_emergency = (w_vision > 0.7) and (a_exp < -2.0)
+      jerk_limit = self.EMERGENCY_JERK_BRAKE if (is_lead_emergency or is_vision_emergency) else self.MAX_JERK_BRAKE
+
     max_delta = jerk_limit * self.DT
-
-    self.prev_a_target = float(np.clip(a_safe, self.prev_a_target - max_delta, self.prev_a_target + max_delta))
+    a_out = float(np.clip(a_safe, self.prev_a_target - max_delta, self.prev_a_target + max_delta))
+    if np.isfinite(a_out):
+      self.prev_a_target = a_out
     return self.prev_a_target

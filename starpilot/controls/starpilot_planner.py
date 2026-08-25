@@ -24,7 +24,6 @@ from openpilot.starpilot.common.starpilot_utilities import calculate_lane_width,
 from openpilot.starpilot.common.starpilot_variables import CRUISING_SPEED, MINIMUM_LATERAL_ACCELERATION, PLANNER_TIME, THRESHOLD
 from openpilot.starpilot.controls.lib.conditional_chill_mode import ConditionalChillMode
 from openpilot.starpilot.controls.lib.conditional_experimental_mode import ConditionalExperimentalMode
-from openpilot.starpilot.controls.lib.hybrid_experimental_mode import HybridExperimentalMode
 from openpilot.starpilot.controls.lib.starpilot_acceleration import StarPilotAcceleration
 from openpilot.starpilot.controls.lib.starpilot_events import StarPilotEvents
 from openpilot.starpilot.controls.lib.starpilot_following import StarPilotFollowing
@@ -69,7 +68,6 @@ class StarPilotPlanner:
     self.starpilot_acceleration = StarPilotAcceleration(self)
     self.starpilot_cem = ConditionalExperimentalMode(self)
     self.starpilot_ccm = ConditionalChillMode(self, self.starpilot_cem)
-    self.hybrid_controller = HybridExperimentalMode()
     self.starpilot_events = StarPilotEvents(self, error_log, ThemeManager)
     self.starpilot_following = StarPilotFollowing(self)
     self.starpilot_vcruise = StarPilotVCruise(self)
@@ -102,7 +100,6 @@ class StarPilotPlanner:
     self.road_curvature = 0
     self.time_to_curve = 0
     self.v_cruise = 0
-    self.hybrid_acceleration = 0.0
 
     self.gps_position = None
 
@@ -224,27 +221,9 @@ class StarPilotPlanner:
 
     conditional_tracking_active = controls_enabled or sm["starpilotCarState"].alwaysOnLateralEnabled
     if conditional_tracking_active and bool(getattr(starpilot_toggles, "hybrid_experimental_mode", False)):
-      # Continuous Hybrid Experimental Control: instead of a binary CEM/CCM mode
-      # switch, fuse the classical Chill ACC target with the model's E2E
-      # trajectory through the HybridExperimentalMode controller. CEM's detector
-      # stays warm so red-light/stop-sign scene state (redLight, forcing_stop)
-      # remains accurate. Experimental Mode stays off so the MPC keeps producing
-      # the crisp classical a_chill that the hybrid is built on.
       self.starpilot_cem.update(v_ego, sm, starpilot_toggles, v_cruise)
       self.starpilot_ccm.experimental_mode = False
       self.starpilot_cem.experimental_mode = False
-      self.hybrid_controller.set_tuning(
-        getattr(starpilot_toggles, "hybrid_exp_bias", 0.0),
-        getattr(starpilot_toggles, "hybrid_vision_brake_sensitivity", 1.0),
-      )
-      self.hybrid_acceleration = self.hybrid_controller.update(
-        v_ego=v_ego,
-        v_cruise=v_cruise,
-        lead_one=self.lead_one,
-        model_v2=sm["modelV2"],
-        a_chill=self._get_chill_accel(v_ego, v_cruise),
-        a_exp=self._get_vision_exp_accel(sm),
-      )
     elif conditional_tracking_active and bool(getattr(starpilot_toggles, "conditional_experimental_mode", False)):
       # Keep CEM's filters warm in AOL so engagement can inherit the current scene.
       self.starpilot_cem.update(v_ego, sm, starpilot_toggles, v_cruise)
@@ -320,40 +299,6 @@ class StarPilotPlanner:
 
     self.tracking_lead_filter.update(following_lead)
     return self.tracking_lead_filter.x >= THRESHOLD
-
-  def _get_vision_exp_accel(self, sm):
-    """Model's raw predicted acceleration for the E2E (Experimental) channel."""
-    try:
-      accel_x = sm["modelV2"].acceleration.x
-      if len(accel_x) > 0:
-        return float(accel_x[0])
-    except (AttributeError, IndexError, TypeError):
-      pass
-    try:
-      return float(sm["modelV2"].action.desiredAcceleration)
-    except (AttributeError, TypeError, ValueError):
-      return 0.0
-
-  def _get_chill_accel(self, v_ego, v_cruise):
-    """Cruise/lead tracking acceleration for the Chill (ACC) channel."""
-    max_accel = float(getattr(self.starpilot_acceleration, "max_accel", 0.0) or 0.0)
-    min_accel = float(getattr(self.starpilot_acceleration, "min_accel", 0.0) or 0.0)
-    if max_accel <= 0.0 and min_accel == 0.0:
-      max_accel, min_accel = 1.5, -2.0
-
-    a_chill = float(np.clip((v_cruise - v_ego) / 2.0, min_accel, max_accel))
-    lead = getattr(self, "lead_one", None)
-    if lead is not None and bool(getattr(lead, "status", False)):
-      d_rel = float(getattr(lead, "dRel", float("inf")))
-      v_lead = float(getattr(lead, "vLead", v_ego))
-      t_follow = float(getattr(self.starpilot_following, "t_follow", 1.45) or 1.45)
-      desired_gap = max(v_ego * t_follow, 4.0)
-      if d_rel < desired_gap:
-        gap_deficit = max(desired_gap - d_rel, 0.0)
-        closing = max(0.0, v_ego - v_lead)
-        lead_decel = -min(closing / 2.0 + gap_deficit / 4.0, 3.0)
-        a_chill = min(a_chill, lead_decel)
-    return float(np.clip(a_chill, min_accel, max_accel))
 
   def publish(self, theme_updated, sm, pm, starpilot_toggles, serialized_toggles=""):
     starpilot_plan_send = messaging.new_message("starpilotPlan")
