@@ -331,22 +331,21 @@ def test_pip_preview_is_under_driving_screen_widgets_and_configured_only_in_gala
   sections = _params_by_section(_layout())
   visual = sections["Visual (Display & UI)"]
 
-  assert {"PIPPreviewEnabled", "PIPPreviewShowOnBlinker", "PIPPreviewShowOnBSM"} <= visual.keys()
+  assert {"PIPPreviewEnabled", "PIPPreviewShowOnBlinker", "PIPPreviewShowOnBSM", "PIPPreviewInvert"} <= visual.keys()
   assert visual["PIPPreviewEnabled"]["parent_key"] == "CustomUI"
   assert visual["PIPPreviewShowOnBlinker"]["parent_key"] == "PIPPreviewEnabled"
   assert visual["PIPPreviewShowOnBSM"]["parent_key"] == "PIPPreviewEnabled"
+  assert visual["PIPPreviewInvert"]["parent_key"] == "PIPPreviewEnabled"
   assert visual["PIPPreviewEnabled"]["settings_tier"] == "advanced"
   assert visual["PIPPreviewShowOnBlinker"]["settings_tier"] == "advanced"
   assert visual["PIPPreviewShowOnBSM"]["settings_tier"] == "advanced"
+  assert visual["PIPPreviewInvert"]["settings_tier"] == "advanced"
 
   assert _declared_default("PIPPreviewEnabled") == "0"
   assert _declared_default("PIPPreviewShowOnBlinker") == "0"
   assert _declared_default("PIPPreviewShowOnBSM") == "0"
-  annotation_default = (
-    '"{\\"width\\":1928,\\"height\\":1208,\\"center_left\\":[315,548],' +
-    '\\"center_right\\":[1571,539],\\"crop_size\\":580}"'
-  )
-  assert annotation_default in PARAM_KEYS_PATH.read_text(encoding="utf-8")
+  assert _declared_default("PIPPreviewInvert") == "0"
+  assert '"{\\"width\\":1928,\\"height\\":1208,\\"center_left\\":[315,548],\\"center_right\\":[1571,539],\\"crop_size\\":580}"' in PARAM_KEYS_PATH.read_text(encoding="utf-8")
 
   physical_settings = (
     REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/aethergrid.py",

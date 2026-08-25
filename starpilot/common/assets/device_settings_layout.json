@@ -2567,6 +2567,16 @@
         "settings_tier": "advanced"
       },
       {
+        "key": "PIPPreviewInvert",
+        "label": "Original Camera View",
+        "description": "Show the side preview exactly as the camera sees it. Leave off for the default mirrored view, which looks like a side mirror.",
+        "picker_description": "Shows the raw camera feed instead of the horizontally mirrored side-mirror view.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "PIPPreviewEnabled",
+        "settings_tier": "advanced"
+      },
+      {
         "key": "Compass",
         "label": "Compass",
         "description": "Show the current driving direction with a simple on-screen compass.",
