@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from openpilot.selfdrive.ui.lib.starpilot_status import (
   DISENGAGED_COLOR,
   ENGAGED_COLOR,
+  EXPERIMENTAL_COLOR,
   HYBRID_EXPERIMENTAL_COLOR,
   LONGITUDINAL_ONLY_COLOR,
   AOL_COLOR,
@@ -14,7 +15,8 @@ from openpilot.selfdrive.ui.lib.starpilot_status import (
 from openpilot.selfdrive.ui.ui_state import UIStatus
 
 
-def _state(*, enabled=False, lat_active=False, aol=False, status=None, events=(), hybrid=False):
+def _state(*, enabled=False, lat_active=False, aol=False, status=None, events=(), hybrid=False, hem_authority=None):
+  params_memory = {"HEMExpAuthority": f"{hem_authority:.3f}"} if hem_authority is not None else {}
   return SimpleNamespace(
     sm={
       "selfdriveState": SimpleNamespace(enabled=enabled, experimentalMode=False),
@@ -27,6 +29,7 @@ def _state(*, enabled=False, lat_active=False, aol=False, status=None, events=()
     traffic_mode_enabled=False,
     conditional_status=0,
     starpilot_toggles={"hybrid_experimental_mode": hybrid},
+    params_memory=SimpleNamespace(get=lambda key, default=None: params_memory.get(key, default)),
   )
 
 
@@ -47,8 +50,24 @@ def test_lateral_active_colors_remain_unchanged():
   assert _rgb(get_border_color(_state())) == _rgb(DISENGAGED_COLOR)
 
 
-def test_hybrid_experimental_mode_uses_purple_border():
-  state = _state(enabled=True, hybrid=True)
+def test_hybrid_experimental_mode_uses_blue_border():
+  state = _state(enabled=True, lat_active=True, hybrid=True)
+
+  assert _rgb(get_border_color(state)) == _rgb(HYBRID_EXPERIMENTAL_COLOR)
+  assert _rgb(get_screen_edge_color(state)) == _rgb(HYBRID_EXPERIMENTAL_COLOR)
+  assert _rgb(get_path_edge_color(state)) == _rgb(HYBRID_EXPERIMENTAL_COLOR)
+
+
+def test_hybrid_experimental_mode_uses_orange_when_exp_dominates():
+  state = _state(enabled=True, lat_active=True, hybrid=True, hem_authority=0.8)
+
+  assert _rgb(get_border_color(state)) == _rgb(EXPERIMENTAL_COLOR)
+  assert _rgb(get_screen_edge_color(state)) == _rgb(EXPERIMENTAL_COLOR)
+  assert _rgb(get_path_edge_color(state)) == _rgb(EXPERIMENTAL_COLOR)
+
+
+def test_hybrid_experimental_mode_keeps_blue_when_chill_dominates():
+  state = _state(enabled=True, lat_active=True, hybrid=True, hem_authority=0.3)
 
   assert _rgb(get_border_color(state)) == _rgb(HYBRID_EXPERIMENTAL_COLOR)
   assert _rgb(get_screen_edge_color(state)) == _rgb(HYBRID_EXPERIMENTAL_COLOR)
@@ -57,7 +76,7 @@ def test_hybrid_experimental_mode_uses_purple_border():
 
 def test_hybrid_experimental_mode_requires_enabled():
   assert _rgb(get_border_color(_state(hybrid=True))) == _rgb(DISENGAGED_COLOR)
-  assert _rgb(get_border_color(_state(enabled=True))) == _rgb(ENGAGED_COLOR)
+  assert _rgb(get_border_color(_state(enabled=True, lat_active=True))) == _rgb(ENGAGED_COLOR)
 
 
 def test_override_color_matches_active_control_mode():
