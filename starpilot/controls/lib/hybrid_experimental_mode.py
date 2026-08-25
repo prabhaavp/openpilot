@@ -47,6 +47,11 @@ class HybridExperimentalMode:
     self.prev_a_target = 0.0
     self.exp_authority = 0.5
 
+    # Last-frame diagnostics surfaced to live logs
+    self.last_w_vision = 0.0
+    self.last_regime = "throttle"
+    self.last_standstill = False
+
     # User tuning
     self.HYBRID_EXP_BIAS = 0.2            # [-1.0, 1.0]
     self.VISION_BRAKE_SENSITIVITY = 1.2   # [0.0, 2.0]
@@ -60,6 +65,9 @@ class HybridExperimentalMode:
     """Seed target with actual vehicle acceleration on engagement to prevent torque bumps."""
     self.prev_a_target = float(a_ego) if np.isfinite(a_ego) else 0.0
     self.exp_authority = 0.5
+    self.last_w_vision = 0.0
+    self.last_regime = "throttle"
+    self.last_standstill = False
 
   def set_tuning(self, exp_bias: float, vision_brake_sensitivity: float, t_follow=None, jerk_factor=None):
     self.HYBRID_EXP_BIAS = float(np.clip(exp_bias, -1.0, 1.0))
@@ -224,4 +232,7 @@ class HybridExperimentalMode:
     a_out = float(np.clip(a_safe, self.prev_a_target - max_delta, self.prev_a_target + max_delta))
     if np.isfinite(a_out):
       self.prev_a_target = a_out
+    self.last_w_vision = w_vision
+    self.last_regime = "brake" if is_braking_phase else "throttle"
+    self.last_standstill = standstill_weight > 0.0
     return self.prev_a_target

@@ -7,6 +7,7 @@ from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
+from openpilot.common.params import Params
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.starpilot.common.model_versions import is_tinygrad_model_version
 from openpilot.starpilot.controls.lib.hybrid_experimental_mode import HybridExperimentalMode
@@ -139,6 +140,8 @@ VISION_LEAD_APPROACH_BRAKING_DEFICIT_MIN = 0.75
 VISION_LEAD_APPROACH_BRAKING_MIN_LEAD_BRAKE = 0.45
 VISION_LEAD_APPROACH_BRAKING_FULL_LEAD_BRAKE = 1.20
 PLANNER_SAFETY_WARNING_INTERVAL = 5.0
+HEM_STATUS_LOG_INTERVAL = 10.0
+HEM_AUTH_PUB_INTERVAL = 0.5
 VISION_LEAD_APPROACH_BRAKING_FLOOR_MIN_DECEL = 1.30
 VISION_LEAD_APPROACH_BRAKING_FLOOR_MAX_DECEL = 1.75
 VISION_LEAD_APPROACH_CONFIRM_TIME = 0.25
@@ -603,6 +606,10 @@ class LongitudinalPlanner:
     self.prev_experimental_mode = None
     self.experimental_release_accel_until = 0.0
     self.hybrid_controller = HybridExperimentalMode()
+    self._hem_status_log_t = 0.0
+    self._hem_logged_active = False
+    self._hem_auth_pub_t = 0.0
+    self._hem_params_memory = None
 
     if self.is_preap:
       try:
@@ -1899,6 +1906,38 @@ class LongitudinalPlanner:
       floor = min(LC_MERGE_ACCEL_BIAS, cruise_cap)
     return floor
 
+  def _log_hem_status(self, now_t, active, v_ego, a_chill, a_exp, a_fused):
+    if active != self._hem_logged_active:
+      self._hem_logged_active = active
+      self._hem_status_log_t = 0.0
+      print(f"[HEM] mode {'ON' if active else 'OFF'}")
+    if not active:
+      return
+    if now_t - self._hem_status_log_t < HEM_STATUS_LOG_INTERVAL:
+      return
+    self._hem_status_log_t = now_t
+    hc = self.hybrid_controller
+    print(
+      f"[HEM] v={v_ego:5.1f} chill={a_chill:6.2f} exp={a_exp:6.2f} "
+      + f"fused={a_fused:6.2f} auth={hc.exp_authority:4.2f} "
+      + f"w_vis={hc.last_w_vision:4.2f} {hc.last_regime}"
+      + (" stop" if hc.last_standstill else "")
+    )
+
+  def _publish_hem_authority(self, now_t):
+    if self._hem_params_memory is None:
+      try:
+        self._hem_params_memory = Params(memory=True)
+      except Exception:
+        return
+    if now_t - self._hem_auth_pub_t < HEM_AUTH_PUB_INTERVAL:
+      return
+    self._hem_auth_pub_t = now_t
+    try:
+      self._hem_params_memory.put("HEMExpAuthority", float(self.hybrid_controller.exp_authority))
+    except Exception:
+      pass
+
   def update(self, sm, starpilot_toggles):
     if self.is_preap:
       self._preap_param_frame += 1
@@ -2330,15 +2369,19 @@ class LongitudinalPlanner:
         a_exp=output_a_target_e2e,
         t_follow=effective_t_follow,
       )
+      self._log_hem_status(now_t, True, scene_v_ego, output_a_target_mpc, output_a_target_e2e, output_a_target)
+      self._publish_hem_authority(now_t)
       output_should_stop = output_should_stop_mpc or output_should_stop_e2e
     elif tinygrad_model and self.mode != 'acc' and self.generation != 'v9':
       output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
       output_should_stop_e2e = sm['modelV2'].action.shouldStop
       output_a_target = min(output_a_target_mpc, output_a_target_e2e)
       output_should_stop = output_should_stop_e2e or output_should_stop_mpc
+      self._log_hem_status(now_t, False, scene_v_ego, output_a_target_mpc, output_a_target_e2e, output_a_target)
     else:
       output_a_target = output_a_target_mpc
       output_should_stop = output_should_stop_mpc
+      self._log_hem_status(now_t, False, scene_v_ego, output_a_target_mpc, float('nan'), output_a_target)
 
     comfort_output_accel_min = get_vehicle_min_accel(self.CP, v_ego) if experimental_mlsim else accel_limits_turns[0]
     vision_cap_accel_min = min(comfort_output_accel_min, get_vehicle_min_accel(self.CP, v_ego))
