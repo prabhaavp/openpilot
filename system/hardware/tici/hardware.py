@@ -10,7 +10,7 @@ from pathlib import Path
 from cereal import log
 from openpilot.common.util import sudo_read, sudo_write
 from openpilot.common.gpio import gpio_set, gpio_init, get_irqs_for_action
-from openpilot.system.hardware.base import HardwareBase, LPABase, ThermalConfig, ThermalZone
+from openpilot.system.hardware.base import HardwareBase, LPABase, LPAError, ThermalConfig, ThermalZone
 from openpilot.system.hardware.tici import iwlist
 from openpilot.system.hardware.tici.esim import TiciLPA
 from openpilot.system.hardware.tici.pins import GPIO
@@ -518,7 +518,11 @@ class Tici(HardwareBase):
 
     # eSIM prime
     dest = "/etc/NetworkManager/system-connections/esim.nmconnection"
-    if self.get_sim_lpa().is_comma_profile(sim_id) and not os.path.exists(dest):
+    try:
+      sim_has_comma_profile = self.get_sim_lpa().is_comma_profile(sim_id)
+    except LPAError:
+      sim_has_comma_profile = False
+    if sim_has_comma_profile and not os.path.exists(dest):
       with open(Path(__file__).parent/'esim.nmconnection') as f, tempfile.NamedTemporaryFile(mode='w') as tf:
         dat = f.read()
         dat = dat.replace("sim-id=", f"sim-id={sim_id}")
