@@ -2312,6 +2312,7 @@ class LongitudinalPlanner:
         model_v2=sm['modelV2'],
         a_chill=output_a_target_mpc,
         a_exp=output_a_target_e2e,
+        t_follow=effective_t_follow,
       )
       output_should_stop = output_should_stop_mpc or output_should_stop_e2e
     elif tinygrad_model and self.mode != 'acc' and self.generation != 'v9':

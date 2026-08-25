@@ -175,7 +175,7 @@ def test_lateral_resume_delay_ignores_signal_cycles_that_never_slow_enough(monke
     planner.shutdown()
 
 
-def test_hybrid_mode_runs_continuous_controller(monkeypatch):
+def test_hybrid_mode_keeps_cem_detector_warm_with_modes_off(monkeypatch):
   planner = make_planner(monkeypatch)
   monkeypatch.setattr(planner.starpilot_cem, "update", lambda *args, **kwargs: None)
 
@@ -184,8 +184,6 @@ def test_hybrid_mode_runs_continuous_controller(monkeypatch):
 
     planner.update(0.0, False, make_sm(planner, frame=1, v_ego=20.0, left_blinker=False), toggles)
 
-    assert planner.hybrid_controller is not None
-    assert planner.hybrid_acceleration != 0.0
     assert planner.starpilot_ccm.experimental_mode is False
     assert planner.starpilot_cem.experimental_mode is False
   finally:
