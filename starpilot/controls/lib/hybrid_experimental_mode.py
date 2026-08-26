@@ -150,15 +150,20 @@ class HybridExperimentalMode:
 
     raw_vision_metric = max(speed_drop_ratio, stop_target_active, model_decel_strength)
     w_vision_raw = float(np.clip(raw_vision_metric * self.VISION_BRAKE_SENSITIVITY, 0.0, 1.0))
-    self.w_vision_filtered = max(w_vision_raw, self.w_vision_filtered * 0.95)
 
-    # Standstill reset logic to prevent launch lag on green lights
+    # Hold the latch during the approach, decay only on departure
     lead_departing = lead_status and (getattr(lead_one, "vLead", 0.0) > 0.5)
     driver_departing = (a_chill > 0.4) and (not lead_status or lead_d_rel > 10.0)
     model_stop_predicted = len(traj_v) > 1 and v_horizon < 0.5
-    departing_from_standstill = (lead_departing or driver_departing) and not model_stop_predicted
-    if v_ego < 0.15 and departing_from_standstill:
+    vision_departing = (v_horizon > 0.5) and (a_exp > 0.1)
+    departing = (lead_departing or vision_departing or driver_departing) and not model_stop_predicted
+
+    if departing:
       self.w_vision_filtered = 0.0
+    elif w_vision_raw > 0.15:
+      self.w_vision_filtered = max(self.w_vision_filtered, w_vision_raw)   # hold, no decay
+    else:
+      self.w_vision_filtered *= 0.97
 
     w_vision = self.w_vision_filtered
 
@@ -170,12 +175,12 @@ class HybridExperimentalMode:
     slow_horizon = sigmoid(3.0 - v_horizon, k=2.0)
     stop_confidence = max(stop_target_active, slow_horizon * speed_drop_ratio)
 
-    # Bug A & B Fix: check if model plans a stop anywhere in near-to-mid distance
+    # Bug A & B Fix: check if model plans a stop/slowdown anywhere in near-to-mid distance
     near_stop_planned = False
     if len(traj_x) == len(traj_v) and len(traj_v) > 0:
-      near_stop_planned = np.any((traj_v < 1.0) & (traj_x < 35.0))
+      near_stop_planned = np.any((traj_v < 4.0) & (traj_x < 35.0))
     elif len(traj_v) > 0:
-      near_stop_planned = np.any(traj_v[:12] < 1.0)
+      near_stop_planned = np.any(traj_v[:12] < 4.0)
 
     if near_stop_planned:
       stop_confidence = max(stop_confidence, 0.8)
@@ -232,12 +237,15 @@ class HybridExperimentalMode:
     # 3. STANDSTILL ANCHOR
     is_stopped = sigmoid(0.4 - v_ego, k=8.0)
     is_staying_stopped = sigmoid(0.5 - v_horizon, k=6.0)
-    vision_departing = (v_horizon > 0.5) and (a_exp > 0.1)
-    departing = (lead_departing or vision_departing or driver_departing) and not model_stop_predicted
 
-    # Bug C Fix: Low-speed acceleration lockout (no longer bypassed during a rolling glitch)
-    if v_ego < 3.0 and self.w_vision_filtered > 0.25:
+    # Bug C Fix: Acceleration lockout expanded to approach band and gated on active latch
+    if self.w_vision_filtered > 0.25 and v_ego < 5.0 and not departing:
       a_fused = min(a_fused, 0.0)
+
+    # Smooth soft lockout ramp: scale positive acceleration to zero based on filter intensity
+    if v_ego < 4.0 and a_fused > 0.0:
+      scale = max(0.0, 1.0 - (self.w_vision_filtered / 0.30))
+      a_fused *= scale
 
     standstill_weight = (0.0 if departing else 1.0) * is_stopped * is_staying_stopped
     a_anchored = lerp(a_fused, smooth_min(a_fused, -0.5, k=6.0), standstill_weight)
