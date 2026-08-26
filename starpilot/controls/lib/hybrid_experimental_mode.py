@@ -48,6 +48,7 @@ class HybridExperimentalMode:
     self.prev_a_target = 0.0
     self.exp_authority = 0.5
     self.w_vision_filtered = 0.0
+    self.tracked_stop_dist = None
 
     # Last-frame diagnostics surfaced to live logs
     self.last_w_vision = 0.0
@@ -73,6 +74,7 @@ class HybridExperimentalMode:
     self.prev_a_target = float(a_ego) if np.isfinite(a_ego) else 0.0
     self.exp_authority = 0.5
     self.w_vision_filtered = 0.0
+    self.tracked_stop_dist = None
     self.last_w_vision = 0.0
     self.last_regime = "throttle"
     self.last_standstill = False
@@ -149,24 +151,28 @@ class HybridExperimentalMode:
     speed_drop_ratio = max(0.0, (v_ego - v_min) / v_ref)
     model_decel_strength = max(0.0, -a_exp / 2.0)
 
-    # Fix 3: Use a shorter planning horizon (~4 seconds out, index 23) for stop sign detection
-    # This prevents the model's proceed-after-stop trajectory predictions from blinding the stop confidence
+    # Fix 3 (Refined): Use a shorter planning horizon (~4 seconds out, index 23) for stop sign detection.
+    # Sigmoids adjusted to engage earlier at higher approach speeds, preventing the vehicle from eating up stop distance.
     v_horizon_short = float(traj_v[min(len(traj_v) - 1, 23)]) if len(traj_v) > 0 else v_ego
-    stop_target_active = sigmoid(1.2 - v_horizon_short, k=4.0)
+    stop_target_active = sigmoid(1.8 - v_horizon_short, k=3.0)
 
     raw_vision_metric = max(speed_drop_ratio, stop_target_active, model_decel_strength)
     w_vision_raw = float(np.clip(raw_vision_metric * self.VISION_BRAKE_SENSITIVITY, 0.0, 1.0))
 
     # Identify departure signals
     lead_departing = lead_status and (getattr(lead_one, "vLead", 0.0) > 0.5)
-    driver_departing = (a_chill > 0.4) and (not lead_status or lead_d_rel > 10.0)
+
+    # Core Bug Fix: Suppress false driver_departing latch resets if we are actively stopping,
+    # unless a true heavy driver override (>1.2) occurs.
+    is_actively_stopping = self.w_vision_filtered > 0.25 and v_ego > 0.5
+    driver_override = (a_chill > 1.2)
+
+    driver_departing = (a_chill > 0.4) and (not lead_status or lead_d_rel > 10.0) and (not is_actively_stopping or driver_override)
     model_stop_predicted = len(traj_v) > 1 and v_horizon < 0.5
     vision_departing = (v_horizon > 0.5) and (a_exp > 0.1)
     departing = (lead_departing or vision_departing or driver_departing) and not model_stop_predicted
 
-    # Refined Fix 2: Protect against rolling approach glitches.
-    # We uniquely trust driver override or lead vehicle departure to clear the latch at any speed.
-    # However, vision model departure is only trusted to clear the latch at a standstill (v_ego < 0.15 m/s).
+    # Latch holds during approach, decay only on verified departure or drivers override
     should_reset_latch = driver_departing or lead_departing or (vision_departing and v_ego < 0.15 and not model_stop_predicted)
 
     if should_reset_latch:
@@ -183,10 +189,8 @@ class HybridExperimentalMode:
 
     # Kinematic stopping calculation
     d_min = float(traj_x[min_idx]) if len(traj_x) > min_idx else float("inf")
-    d_stop_effective = max(d_min - 1.5, 2.0)
-    a_kinematic_stop = 0.0
 
-    slow_horizon = sigmoid(3.0 - v_horizon_short, k=2.0)
+    slow_horizon = sigmoid(4.0 - v_horizon_short, k=1.5)
     stop_confidence = max(stop_target_active, slow_horizon * speed_drop_ratio)
 
     # Bug A & B Fix: check if model plans a stop/slowdown anywhere in near-to-mid distance
@@ -199,7 +203,23 @@ class HybridExperimentalMode:
     if near_stop_planned:
       stop_confidence = max(stop_confidence, 0.8)
 
-    if v_ego > 0.1 and 0.2 < d_min < float("inf") and stop_confidence > 0.15:
+    # Stable odometry-based stop line tracking to bypass distance latency:
+    # Trigger tracking when filtered w_vision is high and model thinks there's a stop line.
+    if w_vision > 0.25 and d_min < 100.0:
+      if self.tracked_stop_dist is None:
+        self.tracked_stop_dist = d_min  # Initialize once on stop latching
+      else:
+        self.tracked_stop_dist -= v_ego * self.DT  # Track strictly using physical odometry
+      d_stop_calc = self.tracked_stop_dist
+    else:
+      self.tracked_stop_dist = None
+      d_stop_calc = d_min
+
+    d_stop_effective = max(d_stop_calc - 1.5, 2.0)
+    a_kinematic_stop = 0.0
+
+    # Kinematic deceleration is calculated from the stable odometer-tracked distance
+    if v_ego > 0.1 and 0.2 < d_stop_calc < float("inf") and w_vision > 0.25:
       a_kinematic_stop = float(np.clip(- (v_ego ** 2) / (2.0 * d_stop_effective), -3.5, 0.0))
       a_kinematic_stop *= self.KINEMATIC_STOP_GAIN
       if d_stop_effective < 6.0 and v_ego < 3.0:
@@ -228,8 +248,7 @@ class HybridExperimentalMode:
     a_throttle_conservative = smooth_min(a_chill, a_exp, k=4.0)
     a_throttle_fused = lerp(a_throttle_optimal, a_throttle_conservative, w_vision)
 
-    # Fix 1: Eliminate target dilution on the brake path.
-    # If Experimental Mode wants to brake, strictly respect the minimum of the targets.
+    # Braking Regime: Never dilute Exp stop braking with Chill's 0.0 m/s^2
     a_chill_brake = 0.0
     if a_exp_effective < 0.0:
       a_chill_brake = min(a_chill, 0.0)
