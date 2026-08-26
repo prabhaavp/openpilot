@@ -140,26 +140,40 @@ class HybridExperimentalMode:
 
     v_min = float(np.min(traj_v))
     min_idx = int(np.argmin(traj_v))
-    v_horizon = float(traj_v[-1]) if len(traj_v) > 0 else v_ego
     v_ref = max(v_ego, 2.0)
+
+    # Use actual/full model horizon endpoint (index -1) for standstill verification
+    v_horizon = float(traj_v[-1]) if len(traj_v) > 0 else v_ego
 
     # Detect deceleration profile or low-speed stop line target
     speed_drop_ratio = max(0.0, (v_ego - v_min) / v_ref)
-    stop_target_active = sigmoid(1.2 - v_horizon, k=4.0)
     model_decel_strength = max(0.0, -a_exp / 2.0)
+
+    # Fix 3: Use a shorter planning horizon (~4 seconds out, index 23) for stop sign detection
+    # This prevents the model's proceed-after-stop trajectory predictions from blinding the stop confidence
+    v_horizon_short = float(traj_v[min(len(traj_v) - 1, 23)]) if len(traj_v) > 0 else v_ego
+    stop_target_active = sigmoid(1.2 - v_horizon_short, k=4.0)
 
     raw_vision_metric = max(speed_drop_ratio, stop_target_active, model_decel_strength)
     w_vision_raw = float(np.clip(raw_vision_metric * self.VISION_BRAKE_SENSITIVITY, 0.0, 1.0))
 
-    # Hold the latch during the approach, decay only on departure
+    # Identify departure signals
     lead_departing = lead_status and (getattr(lead_one, "vLead", 0.0) > 0.5)
     driver_departing = (a_chill > 0.4) and (not lead_status or lead_d_rel > 10.0)
     model_stop_predicted = len(traj_v) > 1 and v_horizon < 0.5
     vision_departing = (v_horizon > 0.5) and (a_exp > 0.1)
     departing = (lead_departing or vision_departing or driver_departing) and not model_stop_predicted
 
-    if departing:
+    # Refined Fix 2: Protect against rolling approach glitches.
+    # We uniquely trust driver override or lead vehicle departure to clear the latch at any speed.
+    # However, vision model departure is only trusted to clear the latch at a standstill (v_ego < 0.15 m/s).
+    should_reset_latch = driver_departing or lead_departing or (vision_departing and v_ego < 0.15 and not model_stop_predicted)
+
+    if should_reset_latch:
       self.w_vision_filtered = 0.0
+    elif departing:
+      # Gently decay the latch if the vision model indicates a departure while still rolling
+      self.w_vision_filtered *= 0.90
     elif w_vision_raw > 0.15:
       self.w_vision_filtered = max(self.w_vision_filtered, w_vision_raw)   # hold, no decay
     else:
@@ -172,7 +186,7 @@ class HybridExperimentalMode:
     d_stop_effective = max(d_min - 1.5, 2.0)
     a_kinematic_stop = 0.0
 
-    slow_horizon = sigmoid(3.0 - v_horizon, k=2.0)
+    slow_horizon = sigmoid(3.0 - v_horizon_short, k=2.0)
     stop_confidence = max(stop_target_active, slow_horizon * speed_drop_ratio)
 
     # Bug A & B Fix: check if model plans a stop/slowdown anywhere in near-to-mid distance
@@ -214,12 +228,12 @@ class HybridExperimentalMode:
     a_throttle_conservative = smooth_min(a_chill, a_exp, k=4.0)
     a_throttle_fused = lerp(a_throttle_optimal, a_throttle_conservative, w_vision)
 
-    # Braking Regime: Never dilute Exp stop braking with Chill's 0.0 m/s^2
+    # Fix 1: Eliminate target dilution on the brake path.
+    # If Experimental Mode wants to brake, strictly respect the minimum of the targets.
     a_chill_brake = 0.0
     if a_exp_effective < 0.0:
       a_chill_brake = min(a_chill, 0.0)
-      a_brake_fused = min(a_exp_effective, a_chill_brake) if a_chill_brake < a_exp_effective \
-        else lerp(a_chill_brake, a_exp_effective, alpha_exp)
+      a_brake_fused = min(a_exp_effective, a_chill_brake)
     else:
       a_brake_fused = min(a_chill, a_exp_effective)
 
@@ -238,8 +252,8 @@ class HybridExperimentalMode:
     is_stopped = sigmoid(0.4 - v_ego, k=8.0)
     is_staying_stopped = sigmoid(0.5 - v_horizon, k=6.0)
 
-    # Bug C Fix: Acceleration lockout expanded to approach band and gated on active latch
-    if self.w_vision_filtered > 0.25 and v_ego < 5.0 and not departing:
+    # Bug C Fix: Low-speed acceleration lockout (active up to 5.0 m/s when vision stop intent is latched)
+    if self.w_vision_filtered > 0.25 and v_ego < 5.0:
       a_fused = min(a_fused, 0.0)
 
     # Smooth soft lockout ramp: scale positive acceleration to zero based on filter intensity
@@ -287,7 +301,7 @@ class HybridExperimentalMode:
         "lead_v_lead": float(getattr(lead_one, "vLead", 0.0)),
         "t_follow": self.t_follow,
         # vision intent
-        "v_min": v_min, "v_horizon": v_horizon, "v_ref": v_ref,
+        "v_min": v_min, "v_horizon": v_horizon, "v_horizon_short": v_horizon_short, "v_ref": v_ref,
         "min_idx": min_idx, "speed_drop_ratio": speed_drop_ratio,
         "stop_target_active": stop_target_active,
         "stop_confidence": stop_confidence,
