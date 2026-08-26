@@ -142,6 +142,24 @@ VISION_LEAD_APPROACH_BRAKING_FULL_LEAD_BRAKE = 1.20
 PLANNER_SAFETY_WARNING_INTERVAL = 5.0
 HEM_STATUS_LOG_INTERVAL = 10.0
 HEM_AUTH_PUB_INTERVAL = 0.5
+
+
+def _hem_log_timestamp() -> str:
+  """Wall-clock timestamp with millisecond precision for the [HEM] live log."""
+  from datetime import datetime
+  now = datetime.now()
+  return now.strftime("%H:%M:%S") + f".{now.microsecond // 1000:03d}"
+
+
+def _hem_format_diag_value(value):
+  """Compact, deterministic formatting for the per-frame HEM diagnostic dump."""
+  if isinstance(value, bool):
+    return "1" if value else "0"
+  if isinstance(value, float):
+    return f"{value:.4f}"
+  if isinstance(value, (int, np.integer)):
+    return str(int(value))
+  return str(value)
 VISION_LEAD_APPROACH_BRAKING_FLOOR_MIN_DECEL = 1.30
 VISION_LEAD_APPROACH_BRAKING_FLOOR_MAX_DECEL = 1.75
 VISION_LEAD_APPROACH_CONFIRM_TIME = 0.25
@@ -1907,22 +1925,20 @@ class LongitudinalPlanner:
     return floor
 
   def _log_hem_status(self, now_t, active, v_ego, a_chill, a_exp, a_fused):
+    hc = self.hybrid_controller
+    hc.record_diag = True
+    ts = _hem_log_timestamp()
     if active != self._hem_logged_active:
       self._hem_logged_active = active
       self._hem_status_log_t = 0.0
-      print(f"[HEM] mode {'ON' if active else 'OFF'}")
+      print(f"[HEM] {ts} mode {'ON' if active else 'OFF'}")
     if not active:
       return
-    if now_t - self._hem_status_log_t < HEM_STATUS_LOG_INTERVAL:
-      return
-    self._hem_status_log_t = now_t
-    hc = self.hybrid_controller
-    print(
-      f"[HEM] v={v_ego:5.1f} chill={a_chill:6.2f} exp={a_exp:6.2f} "
-      + f"fused={a_fused:6.2f} auth={hc.exp_authority:4.2f} "
-      + f"w_vis={hc.last_w_vision:4.2f} {hc.last_regime}"
-      + (" stop" if hc.last_standstill else "")
-    )
+    # Rich per-frame dump of every HEM decision variable so a missed stop can be
+    # diagnosed to the exact frame and signal (see hybrid_experimental_mode diag).
+    d = hc.diag
+    if d:
+      print(f"[HEM] {ts} " + " ".join(f"{k}={_hem_format_diag_value(v)}" for k, v in d.items()))
 
   def _publish_hem_status(self, now_t):
     if self._hem_params_memory is None:
@@ -2369,6 +2385,15 @@ class LongitudinalPlanner:
         a_exp=output_a_target_e2e,
         t_follow=effective_t_follow,
       )
+      hc = self.hybrid_controller
+      hc.record_diag = True
+      # Surface whether Chill/Exp explicitly asked to stop; critical for diagnosing
+      # cases where Exp wanted to brake but the HEM fusion did not command a stop.
+      hc.diag["should_stop_mpc"] = bool(output_should_stop_mpc)
+      hc.diag["should_stop_e2e"] = bool(output_should_stop_e2e)
+      hc.diag["should_stop_fused"] = bool(output_should_stop_mpc or output_should_stop_e2e)
+      hc.diag["model_desired_accel"] = float(sm['modelV2'].action.desiredAcceleration)
+      hc.diag["a_out"] = float(output_a_target)
       self._log_hem_status(now_t, True, scene_v_ego, output_a_target_mpc, output_a_target_e2e, output_a_target)
       self._publish_hem_status(now_t)
       output_should_stop = output_should_stop_mpc or output_should_stop_e2e
