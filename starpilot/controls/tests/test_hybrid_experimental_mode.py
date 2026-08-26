@@ -282,3 +282,31 @@ def test_last_exp_dominant_false_at_neutral_cruise():
   controller = make_controller(prev=0.0)
   run(controller, a_chill=0.0, a_exp=0.05, frames=10)
   assert not controller.last_exp_dominant
+
+
+def test_red_light_approach_brakes_kinematically_on_partial_slowdown():
+  # Regression: the model predicts only a PARTIAL slowdown (v_min ~ 3 m/s), not a
+  # full stop, so the old v_min<1.2 gate never fired and HEM mirrored the model's
+  # weak a_exp (-0.1) -> it would roll the red light. HEM must now apply the
+  # kinematic -v^2/2d floor toward the closing stop point regardless.
+  controller = make_controller(prev=0.0)
+  traj_v = np.linspace(15.0, 3.0, 33)
+  traj_x = np.linspace(0.0, 40.0, 33)
+  model = FakeModel(velocity=traj_v, position=traj_x)
+  a = run(controller, v_ego=15.0, v_cruise=20.0, lead=FakeLead(status=False),
+          model=model, a_chill=0.0, a_exp=-0.1, frames=10)
+  # kinematic = -15^2/(2*38.5) ~ -2.9; even with jerk slew HEM must brake hard,
+  # not track the -0.1 exp input.
+  assert a < -1.0, f"HEM must apply kinematic stop on partial-slowdown approach, got {a}"
+
+
+def test_no_kinematic_brake_on_gentle_high_horizon_slowdown():
+  # A gentle slowdown that KEEPS a high horizon speed (curve / slower traffic,
+  # ends at 15 m/s) must NOT trigger kinematic stop-to-zero braking.
+  controller = make_controller(prev=0.0)
+  traj_v = np.linspace(20.0, 15.0, 33)
+  traj_x = np.linspace(0.0, 100.0, 33)
+  model = FakeModel(velocity=traj_v, position=traj_x)
+  a = run(controller, v_ego=20.0, v_cruise=20.0, lead=FakeLead(status=False),
+          model=model, a_chill=0.0, a_exp=-0.1, frames=5)
+  assert a > -0.5, f"Gentle high-horizon slowdown must not hard-brake, got {a}"
