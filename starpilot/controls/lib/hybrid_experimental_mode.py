@@ -60,6 +60,7 @@ class HybridExperimentalMode:
     # User tuning
     self.HYBRID_EXP_BIAS = 0.2            # [-1.0, 1.0]
     self.VISION_BRAKE_SENSITIVITY = 1.2   # [0.0, 2.0]
+    self.KINEMATIC_STOP_GAIN = 1.0        # [0.0, 2.0] scales the -v^2/2d stop-line brake floor
 
     # Active profile parameters
     self.t_follow = self.BASE_T_FOLLOW
@@ -76,9 +77,11 @@ class HybridExperimentalMode:
     self.last_exp_dominant = False
     self.diag = {}
 
-  def set_tuning(self, exp_bias: float, vision_brake_sensitivity: float, t_follow=None, jerk_factor=None):
+  def set_tuning(self, exp_bias: float, vision_brake_sensitivity: float, kinematic_stop_gain: float = 1.0,
+                 t_follow=None, jerk_factor=None):
     self.HYBRID_EXP_BIAS = float(np.clip(exp_bias, -1.0, 1.0))
     self.VISION_BRAKE_SENSITIVITY = float(np.clip(vision_brake_sensitivity, 0.0, 2.0))
+    self.KINEMATIC_STOP_GAIN = float(np.clip(kinematic_stop_gain, 0.0, 2.0))
     if t_follow is not None or jerk_factor is not None:
       self._update_profile_limits(
         t_follow if t_follow is not None else self.t_follow,
@@ -156,6 +159,7 @@ class HybridExperimentalMode:
 
     if v_ego > 0.1 and 0.2 < d_min < float("inf") and stop_confidence > 0.15:
       a_kinematic_stop = float(np.clip(- (v_ego ** 2) / (2.0 * d_stop_effective), -3.5, 0.0))
+      a_kinematic_stop *= self.KINEMATIC_STOP_GAIN
       if d_stop_effective < 6.0 and v_ego < 3.0:
         a_kinematic_stop = min(a_kinematic_stop, -0.6)
       a_exp_effective = min(a_exp, a_kinematic_stop)
