@@ -33,20 +33,24 @@ def _is_hybrid_experimental_mode(state: UIState) -> bool:
   return bool(state.starpilot_toggles.get("hybrid_experimental_mode", False))
 
 
-def _hem_exp_authority(state: UIState) -> float:
-  """Exp/E2E authority weight (0.0 chill-only .. 1.0 exp-only) published by the planner."""
+def _hem_exp_dominant(state: UIState) -> bool:
+  """True when the fused output tracks the E2E/vision input more than chill ACC.
+
+  Uses the planner's per-frame comparison (HEMExpDominant) rather than the raw
+  exp_authority, which is inflated by the E2E Authority Bias baseline.
+  """
   params_memory = getattr(state, "params_memory", None)
   if params_memory is None:
-    return 0.5
+    return False
   try:
-    return float(params_memory.get("HEMExpAuthority") or 0.5)
+    return bool(int(params_memory.get("HEMExpDominant") or 0))
   except (TypeError, ValueError):
-    return 0.5
+    return False
 
 
 def _hem_border_color(state: UIState) -> rl.Color:
   """Blue when chill dominates the fusion, orange when experimental/vision dominates (like CEM)."""
-  return EXPERIMENTAL_COLOR if _hem_exp_authority(state) > 0.5 else HYBRID_EXPERIMENTAL_COLOR
+  return EXPERIMENTAL_COLOR if _hem_exp_dominant(state) else HYBRID_EXPERIMENTAL_COLOR
 
 
 def _override_color_applies(state: UIState) -> bool:
