@@ -151,8 +151,7 @@ class HybridExperimentalMode:
     speed_drop_ratio = max(0.0, (v_ego - v_min) / v_ref)
     model_decel_strength = max(0.0, -a_exp / 2.0)
 
-    # Fix 3 (Refined): Use a shorter planning horizon (~4 seconds out, index 23) for stop sign detection.
-    # Sigmoids adjusted to engage earlier at higher approach speeds, preventing the vehicle from eating up stop distance.
+    # Shorter planning horizon (~4 seconds out, index 23) for stop sign detection
     v_horizon_short = float(traj_v[min(len(traj_v) - 1, 23)]) if len(traj_v) > 0 else v_ego
     stop_target_active = sigmoid(1.8 - v_horizon_short, k=3.0)
 
@@ -162,7 +161,7 @@ class HybridExperimentalMode:
     # Identify departure signals
     lead_departing = lead_status and (getattr(lead_one, "vLead", 0.0) > 0.5)
 
-    # Core Bug Fix: Suppress false driver_departing latch resets if we are actively stopping,
+    # Core Bug Fix: Suppress driver_departing latch resets if we are actively stopping,
     # unless a true heavy driver override (>1.2) occurs.
     is_actively_stopping = self.w_vision_filtered > 0.25 and v_ego > 0.5
     driver_override = (a_chill > 1.2)
@@ -180,8 +179,9 @@ class HybridExperimentalMode:
     elif departing:
       # Gently decay the latch if the vision model indicates a departure while still rolling
       self.w_vision_filtered *= 0.90
-    elif w_vision_raw > 0.15:
-      self.w_vision_filtered = max(self.w_vision_filtered, w_vision_raw)   # hold, no decay
+    elif w_vision_raw > 0.15 or (self.tracked_stop_dist is not None and self.tracked_stop_dist > 0.5):
+      # Latch is sustained without decay as long as tracked stop distance is positive and active
+      self.w_vision_filtered = max(self.w_vision_filtered, w_vision_raw if w_vision_raw > 0.15 else 1.0)
     else:
       self.w_vision_filtered *= 0.97
 
@@ -193,7 +193,6 @@ class HybridExperimentalMode:
     slow_horizon = sigmoid(4.0 - v_horizon_short, k=1.5)
     stop_confidence = max(stop_target_active, slow_horizon * speed_drop_ratio)
 
-    # Bug A & B Fix: check if model plans a stop/slowdown anywhere in near-to-mid distance
     near_stop_planned = False
     if len(traj_x) == len(traj_v) and len(traj_v) > 0:
       near_stop_planned = np.any((traj_v < 4.0) & (traj_x < 35.0))
@@ -203,22 +202,25 @@ class HybridExperimentalMode:
     if near_stop_planned:
       stop_confidence = max(stop_confidence, 0.8)
 
-    # Stable odometry-based stop line tracking to bypass distance latency:
-    # Trigger tracking when filtered w_vision is high and model thinks there's a stop line.
-    if w_vision > 0.25 and d_min < 100.0:
+    # Robust Stop Distance Tracking (Runs on every frame, protected against standstill startup noise)
+    if stop_confidence > 0.35 and d_min < 100.0 and v_ego > 1.5 and (not lead_status or lead_d_rel > self.D_STATIC_SAFE + 10.0):
       if self.tracked_stop_dist is None:
-        self.tracked_stop_dist = d_min  # Initialize once on stop latching
-      else:
-        self.tracked_stop_dist -= v_ego * self.DT  # Track strictly using physical odometry
-      d_stop_calc = self.tracked_stop_dist
-    else:
-      self.tracked_stop_dist = None
-      d_stop_calc = d_min
+        self.tracked_stop_dist = d_min
+      elif d_min > self.tracked_stop_dist + 15.0: # Re-sync only if a new stop line is further ahead
+        self.tracked_stop_dist = d_min
+
+    # Decrement tracker on every frame if active:
+    if self.tracked_stop_dist is not None:
+      self.tracked_stop_dist -= v_ego * self.DT
+      # If we have passed the stop line or the vehicle is departing, reset tracking
+      if self.tracked_stop_dist < -2.0 or departing:
+        self.tracked_stop_dist = None
+
+    d_stop_calc = self.tracked_stop_dist if self.tracked_stop_dist is not None else d_min
 
     d_stop_effective = max(d_stop_calc - 1.5, 2.0)
     a_kinematic_stop = 0.0
 
-    # Kinematic deceleration is calculated from the stable odometer-tracked distance
     if v_ego > 0.1 and 0.2 < d_stop_calc < float("inf") and w_vision > 0.25:
       a_kinematic_stop = float(np.clip(- (v_ego ** 2) / (2.0 * d_stop_effective), -3.5, 0.0))
       a_kinematic_stop *= self.KINEMATIC_STOP_GAIN
