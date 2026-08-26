@@ -241,7 +241,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"HybridExpBias", {PERSISTENT, FLOAT, "0", "0", 1}},
     {"HybridExperimental", {PERSISTENT, BOOL, "0", "0", 1}},
     {"HybridVisionBrakeSensitivity", {PERSISTENT, FLOAT, "1", "1", 1}},
-    {"HEMExpAuthority", {CLEAR_ON_MANAGER_START, FLOAT, "0.5", "0.5", 2}},
+    {"HEMExpDominant", {CLEAR_ON_MANAGER_START, BOOL, "0", "0", 2}},
     {"CurvatureData", {PERSISTENT | DONT_LOG, JSON, "{}", "{}"}},
     {"CurveSpeedController", {PERSISTENT, BOOL, "1", "0", 1, SETTINGS_SIMPLE}},
     {"CurveSpeedControllerNoLead", {PERSISTENT, BOOL, "0", "0", 1, SETTINGS_SIMPLE}},

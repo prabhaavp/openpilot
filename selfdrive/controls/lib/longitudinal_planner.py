@@ -1924,7 +1924,7 @@ class LongitudinalPlanner:
       + (" stop" if hc.last_standstill else "")
     )
 
-  def _publish_hem_authority(self, now_t):
+  def _publish_hem_status(self, now_t):
     if self._hem_params_memory is None:
       try:
         self._hem_params_memory = Params(memory=True)
@@ -1934,7 +1934,7 @@ class LongitudinalPlanner:
       return
     self._hem_auth_pub_t = now_t
     try:
-      self._hem_params_memory.put("HEMExpAuthority", float(self.hybrid_controller.exp_authority))
+      self._hem_params_memory.put_bool("HEMExpDominant", bool(self.hybrid_controller.last_exp_dominant))
     except Exception:
       pass
 
@@ -2370,7 +2370,7 @@ class LongitudinalPlanner:
         t_follow=effective_t_follow,
       )
       self._log_hem_status(now_t, True, scene_v_ego, output_a_target_mpc, output_a_target_e2e, output_a_target)
-      self._publish_hem_authority(now_t)
+      self._publish_hem_status(now_t)
       output_should_stop = output_should_stop_mpc or output_should_stop_e2e
     elif tinygrad_model and self.mode != 'acc' and self.generation != 'v9':
       output_a_target_e2e = sm['modelV2'].action.desiredAcceleration

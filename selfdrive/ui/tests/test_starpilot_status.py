@@ -15,8 +15,8 @@ from openpilot.selfdrive.ui.lib.starpilot_status import (
 from openpilot.selfdrive.ui.ui_state import UIStatus
 
 
-def _state(*, enabled=False, lat_active=False, aol=False, status=None, events=(), hybrid=False, hem_authority=None):
-  params_memory = {"HEMExpAuthority": f"{hem_authority:.3f}"} if hem_authority is not None else {}
+def _state(*, enabled=False, lat_active=False, aol=False, status=None, events=(), hybrid=False, hem_exp_dominant=None):
+  params_memory = {"HEMExpDominant": b"1"} if hem_exp_dominant else {}
   return SimpleNamespace(
     sm={
       "selfdriveState": SimpleNamespace(enabled=enabled, experimentalMode=False),
@@ -59,7 +59,7 @@ def test_hybrid_experimental_mode_uses_blue_border():
 
 
 def test_hybrid_experimental_mode_uses_orange_when_exp_dominates():
-  state = _state(enabled=True, lat_active=True, hybrid=True, hem_authority=0.8)
+  state = _state(enabled=True, lat_active=True, hybrid=True, hem_exp_dominant=True)
 
   assert _rgb(get_border_color(state)) == _rgb(EXPERIMENTAL_COLOR)
   assert _rgb(get_screen_edge_color(state)) == _rgb(EXPERIMENTAL_COLOR)
@@ -67,7 +67,7 @@ def test_hybrid_experimental_mode_uses_orange_when_exp_dominates():
 
 
 def test_hybrid_experimental_mode_keeps_blue_when_chill_dominates():
-  state = _state(enabled=True, lat_active=True, hybrid=True, hem_authority=0.3)
+  state = _state(enabled=True, lat_active=True, hybrid=True, hem_exp_dominant=False)
 
   assert _rgb(get_border_color(state)) == _rgb(HYBRID_EXPERIMENTAL_COLOR)
   assert _rgb(get_screen_edge_color(state)) == _rgb(HYBRID_EXPERIMENTAL_COLOR)

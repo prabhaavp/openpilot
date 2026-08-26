@@ -51,6 +51,7 @@ class HybridExperimentalMode:
     self.last_w_vision = 0.0
     self.last_regime = "throttle"
     self.last_standstill = False
+    self.last_exp_dominant = False
 
     # User tuning
     self.HYBRID_EXP_BIAS = 0.2            # [-1.0, 1.0]
@@ -68,6 +69,7 @@ class HybridExperimentalMode:
     self.last_w_vision = 0.0
     self.last_regime = "throttle"
     self.last_standstill = False
+    self.last_exp_dominant = False
 
   def set_tuning(self, exp_bias: float, vision_brake_sensitivity: float, t_follow=None, jerk_factor=None):
     self.HYBRID_EXP_BIAS = float(np.clip(exp_bias, -1.0, 1.0))
@@ -235,4 +237,9 @@ class HybridExperimentalMode:
     self.last_w_vision = w_vision
     self.last_regime = "brake" if is_braking_phase else "throttle"
     self.last_standstill = standstill_weight > 0.0
+    # Border hint: True when the fused output tracks the E2E/vision input more
+    # closely than chill ACC. Setting-independent, unlike raw exp_authority which
+    # includes the E2E Authority Bias baseline.
+    out = self.prev_a_target
+    self.last_exp_dominant = abs(out - a_exp) < abs(out - a_chill) - 0.03
     return self.prev_a_target

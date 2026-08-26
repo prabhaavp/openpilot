@@ -260,3 +260,25 @@ def test_vision_stop_uses_emergency_brake_ramp():
   model = FakeModel(velocity=list(np.linspace(20.0, 0.2, 33)), position=list(np.linspace(0.0, 40.0, 33)))
   out = [controller.update(20.0, 25.0, FakeLead(status=False), model, 0.0, -3.5) for _ in range(5)]
   assert out[-1] <= -2.5, f"Vision stop should ramp braking fast, got {out}"
+
+
+def test_last_exp_dominant_true_when_vision_braking():
+  controller = make_controller(prev=0.0)
+  model = FakeModel(velocity=list(np.linspace(20.0, 0.2, 33)), position=list(np.linspace(0.0, 40.0, 33)))
+  run(controller, v_ego=20.0, v_cruise=25.0, lead=FakeLead(status=False),
+      model=model, a_chill=0.0, a_exp=-3.0, frames=60)
+  assert controller.last_exp_dominant
+
+
+def test_last_exp_dominant_false_when_chill_brakes_for_lead():
+  controller = make_controller(prev=0.0)
+  lead = FakeLead(status=True, d_rel=5.0, v_lead=0.0)
+  model = FakeModel(velocity=[15.0] * 33, position=list(np.linspace(0.0, 100.0, 33)))
+  run(controller, v_ego=15.0, v_cruise=20.0, lead=lead, model=model, a_chill=-2.5, a_exp=1.0, frames=40)
+  assert not controller.last_exp_dominant
+
+
+def test_last_exp_dominant_false_at_neutral_cruise():
+  controller = make_controller(prev=0.0)
+  run(controller, a_chill=0.0, a_exp=0.05, frames=10)
+  assert not controller.last_exp_dominant
