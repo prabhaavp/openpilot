@@ -16,16 +16,15 @@ def clamp(val: float, low: float, high: float) -> float:
 class HybridExperimentalMode:
   """
   Hybrid Experimental Mode (HEM)
-  1. Open Road: Pure Chill MPC cruise & radar follow distance.
-  2. Pure Braking Authority: Experimental decel dominates 100% with time-based latching.
-  3. Rolling-Dip Immunity: Cruise throttle locked out during stops; low-speed dips cannot surge.
-  4. Subtle Blending: Smooth transitions only when throttle commands are nearly identical.
-  5. Standstill Lock: Hardware brake hold latched until verified green/lead departure.
+  1. Open Road: Follows Chill MPC cruise & radar headway.
+  2. Slower Lead Approach: Blends smooth vision decel with MPC follow distance.
+  3. Red Lights / Stop Signs: Latches pure vision braking with active zero-speed ramp.
+  4. Rolling-Dip Immune: Decelerates all the way to 0 m/s even if model trajectory rises at low speeds.
+  5. Standstill Hold & Departure: Locks mechanical brake hold until green light/lead departure/gas press.
   """
 
-  # Time in seconds to hold braking dominance once triggered (immune to rolling dips)
-  BRAKE_HOLD_TIME = 3.0
-  STANDSTILL_SPEED = 0.8  # m/s (~1.8 mph)
+  STANDSTILL_SPEED = 0.6       # m/s (~1.3 mph)
+  STOP_ENGAGE_DECEL = -0.15    # m/s^2 (threshold to enter stopping state)
   MINOR_DIFF_THRESHOLD = 0.25  # m/s^2
 
   def __init__(self):
@@ -34,7 +33,6 @@ class HybridExperimentalMode:
     self.prev_a_target = 0.0
     self.last_exp_dominant = False
     self.stopping_latched = False
-    self.brake_hold_until = 0.0
     self.diag = {}
     self.record_diag = False
 
@@ -48,7 +46,6 @@ class HybridExperimentalMode:
     self.w_vision = 0.0
     self.last_exp_dominant = False
     self.stopping_latched = False
-    self.brake_hold_until = 0.0
     self.diag = {}
 
   def set_tuning(self, exp_bias: float, vision_brake_sensitivity: float):
@@ -57,7 +54,6 @@ class HybridExperimentalMode:
 
   def update(self, v_ego, v_cruise, lead_one, model_v2, a_chill, a_exp,
              should_stop_exp=False, should_stop_chill=False, gas_pressed=False):
-    now = time.monotonic()
 
     # 0. Sanitize inputs
     if not math.isfinite(a_chill):
@@ -84,47 +80,44 @@ class HybridExperimentalMode:
     at_standstill = v_ego < self.STANDSTILL_SPEED
     driver_override = bool(gas_pressed)
     lead_departing = at_standstill and lead_status and (lead_v > 0.6) and ((lead_v - v_ego) > 0.4)
-    # Require sustained vision acceleration & open lookahead to verify departure
-    vision_departing = at_standstill and (v_horizon > 2.5) and (v_short > 1.2) and (a_exp > 0.20)
+    # Verified green light: sustained positive model accel and open lookahead
+    vision_departing = at_standstill and (v_horizon > 3.0) and (v_short > 1.5) and (a_exp > 0.25)
     is_departing = lead_departing or vision_departing or driver_override
 
-    # 3. Pure Braking & Stopping Trigger
-    # Trigger on any real vision decel, stop request, or low-speed stop-line trajectory
-    wants_pure_braking = (
-      (a_exp < (a_chill - 0.05) and a_exp < -0.10) or
+    # 3. Stopping Latch Management
+    # Trigger stopping latch on real vision decel, stop request, or low-speed stop line approach
+    wants_stopping = (
+      (a_exp < (a_chill - 0.05) and a_exp < self.STOP_ENGAGE_DECEL) or
       should_stop_exp or
-      (v_min < 0.5 and v_ego < 4.0 and a_exp < 0.1)
+      (v_ego < 3.5 and v_min < 1.0 and a_exp < 0.0)
     )
 
-    # 4. Stopping State & Time-Based Latch Management
     if driver_override or is_departing:
       self.stopping_latched = False
-      self.brake_hold_until = 0.0
-    elif wants_pure_braking:
+    elif wants_stopping:
       self.stopping_latched = True
-      self.brake_hold_until = now + self.BRAKE_HOLD_TIME
     elif self.stopping_latched and not at_standstill:
-      # Road opened up mid-slowdown (e.g. light turned green before complete stop)
-      if a_exp > 0.35 and v_min > (v_ego * 0.9) and not should_stop_exp and now >= self.brake_hold_until:
+      # Only clear latch while rolling if the road clearly opens (e.g. light turns green mid-slowdown)
+      if a_exp > 0.40 and v_min > (v_ego * 0.95) and not should_stop_exp:
         self.stopping_latched = False
 
-    latch_active = (now < self.brake_hold_until) or self.stopping_latched
-
-    # 5. Output Arbitration & Regime Fusion
-    if latch_active:
-      # PURE BRAKING DOMINANCE: Lock out positive cruise throttle completely
+    # 4. Output Arbitration & Regime Fusion
+    if self.stopping_latched:
       self.last_exp_dominant = True
       self.w_vision = 1.0
 
-      if a_exp < 0.0:
+      if a_exp < -0.20:
+        # Vision model is actively commanding strong decel
         a_vision_brake = a_exp * self.VISION_BRAKE_SENSITIVITY
         a_out = min(a_chill, a_vision_brake)
       else:
-        # Near bottom of rolling dip: prevent positive acceleration surges
-        a_out = min(a_chill, 0.0)
+        # Rolling dip / low-speed completion: enforce smooth decel ramp to 0 m/s
+        # (Prevents coasting/surging when model trajectory bottoms out at ~3 mph)
+        a_stop_ramp = -clamp(v_ego * 0.75 + 0.35, 0.45, 1.20)
+        a_out = min(a_chill, a_stop_ramp)
 
     else:
-      # CRUISE / THROTTLE REGIME:
+      # CRUISE / THROTTLE REGIME
       self.last_exp_dominant = False
       a_diff = a_exp - a_chill
 
@@ -142,10 +135,11 @@ class HybridExperimentalMode:
         a_out = a_chill + max(0.0, a_diff) * self.HYBRID_EXP_BIAS
         self.w_vision = max(0.0, self.w_vision - 0.05)
 
-    # 6. Authoritative Standstill Handshake
+    # 5. Authoritative Standstill Handshake
+    # Bring to full mechanical stop hold when stopping is latched near standstill
     standstill_intent = not is_departing and (
       should_stop_exp or
-      (self.stopping_latched and v_ego < 0.6) or
+      (self.stopping_latched and v_ego < 1.2) or
       (v_ego < 0.5 and (v_horizon < 1.0 or a_exp < -0.05))
     )
     should_stop_fused = bool(should_stop_chill or standstill_intent)
@@ -165,12 +159,11 @@ class HybridExperimentalMode:
         "driver_override": driver_override,
         "is_departing": is_departing,
         "stopping_latched": self.stopping_latched,
-        "latch_active": latch_active,
         "exp_dominant": self.last_exp_dominant,
         "standstill_intent": standstill_intent,
         "should_stop_fused": should_stop_fused,
         "a_out": a_out,
-        "regime": "pure_brake" if latch_active else "cruise",
+        "regime": "pure_brake" if self.stopping_latched else "cruise",
         "standstill": standstill_intent,
       }
 
