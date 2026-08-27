@@ -75,57 +75,43 @@ class HybridExperimentalMode:
     driver_override = bool(gas_pressed)
     is_departing = lead_departing or vision_departing or driver_override
 
-    # 3. Vision Stop & Decel Detection
-    # A stop sign / red light shows up as the model predicting a deceleration to
-    # (near) standstill somewhere inside the lookahead window, even when it resumes
-    # driving past the stop line (so v_horizon stays high). Use a permissive
-    # threshold so it fires during a 15-20 mph approach instead of only centimeters
-    # before the line; the old far-horizon check (v_horizon<0.8) and the strict
-    # v_short<1.5 mid-horizon check both failed to trigger in time.
-    # The dip must either reach (near) standstill, or drop well below current speed,
-    # so a slow crawl (e.g. 5 mph) on an open road never latches a phantom stop.
-    traj_dips_to_stop = has_full_trajectory and (
-      (v_min < 1.0) or (v_min < 3.0 and v_min < v_ego * 0.7)
-    )
-    horizon_stopping = not is_departing and (
-      (v_horizon < 0.8) or traj_dips_to_stop or should_stop_exp
-    )
-
-    speed_drop_ratio = max(0.0, (v_ego - v_min) / max(v_ego, 2.0))
-    model_decel_strength = max(0.0, -a_exp * 0.5)
-
-    # 4. Instant Braking Authority
-    # Braking is always granted to Experimental Mode without delay, filtering, or
-    # 0.5x dilution: the moment vision commands meaningful deceleration (a_exp < -0.2
-    # and stronger than Chill) or any stop condition fires, take full brake authority.
-    vision_braking_active = not is_departing and (
-      horizon_stopping or (a_exp < -0.2 and a_exp < a_chill)
-    )
-
-    if is_departing:
-      self.w_vision = 0.0
-    elif vision_braking_active:
-      self.w_vision = 1.0  # Instant full braking authority
-    else:
-      # Smooth decay back to chill when braking ceases
-      self.w_vision = max(0.0, self.w_vision - 0.05)
-
-    # 5. Dual-Regime Fusion
+    # 3. Dual-Regime Fusion
+    # Braking: Experimental mode gets 100% authority whenever it wants to decelerate
+    # more than Chill MPC (a_exp < a_chill). Openpilot vision models rarely plan a
+    # hard v=0 in the trajectory until actual standstill (they show a rolling dip to
+    # ~2 m/s then resume), so gating braking behind trajectory thresholds released the
+    # brakes at ~5 mph mid-stop. No trajectory gating, no filtering, no dilution here.
     a_brake_fused = min(a_chill, a_exp)
+    # Throttle: Chill MPC controls cruise acceleration, with optional exp bias.
     a_throttle_fused = a_chill + max(0.0, a_exp - a_chill) * self.HYBRID_EXP_BIAS
 
-    # Output Arbitration: if vision wants to brake, use full a_brake_fused immediately
-    is_stopping_event = bool(vision_braking_active or self.w_vision > 0.3)
-    self.last_exp_dominant = is_stopping_event
+    # 4. Output Arbitration
+    # If the model is commanding real deceleration (a_exp < 0, stronger than Chill),
+    # grant it full braking immediately and hold it all the way to standstill.
+    is_braking = not is_departing and (a_exp < a_chill and a_exp < 0.0)
+    self.last_exp_dominant = bool(is_braking or should_stop_exp)
+
+    # w_vision is a diagnostic mirror of braking dominance (used by replay tooling).
+    if is_departing:
+      self.w_vision = 0.0
+    elif self.last_exp_dominant:
+      self.w_vision = 1.0
+    else:
+      self.w_vision = max(0.0, self.w_vision - 0.05)
 
     if self.last_exp_dominant:
       a_out = a_brake_fused
     else:
-      a_out = lerp(a_throttle_fused, a_brake_fused, self.w_vision)
+      a_out = a_throttle_fused
 
-    # 6. Authoritative Standstill Handshake
-    standstill_intent = not is_departing and (v_ego < 0.5 and (v_horizon < 0.4 or should_stop_exp))
-    should_stop_fused = bool(should_stop_chill or (not is_departing and (should_stop_exp or standstill_intent)))
+    # 5. Authoritative Standstill Handshake
+    # Bring to full mechanical stop hold when stopping is requested, or when ego is
+    # near zero speed while still intending to brake.
+    standstill_intent = not is_departing and (
+      should_stop_exp or
+      (v_ego < 0.6 and (v_horizon < 0.8 or a_exp < -0.1))
+    )
+    should_stop_fused = bool(should_stop_chill or standstill_intent)
 
     if self.record_diag:
       self.diag = {
@@ -136,18 +122,14 @@ class HybridExperimentalMode:
         "lead_status": lead_status, "lead_d_rel": lead_d, "lead_v_lead": lead_v,
         "has_full_trajectory": has_full_trajectory,
         "v_horizon": v_horizon, "v_short": v_short, "v_min": v_min,
-        "speed_drop_ratio": speed_drop_ratio,
-        "model_decel_strength": model_decel_strength,
         "w_vision": self.w_vision,
         "lead_departing": lead_departing,
         "vision_departing": vision_departing,
         "driver_override": driver_override,
         "is_departing": is_departing,
-        "horizon_stopping": horizon_stopping,
-        "vision_braking_active": vision_braking_active,
+        "is_braking": is_braking,
         "a_brake_fused": a_brake_fused,
         "a_throttle_fused": a_throttle_fused,
-        "is_stopping_event": is_stopping_event,
         "exp_dominant": self.last_exp_dominant,
         "standstill_intent": standstill_intent,
         "should_stop_fused": should_stop_fused,
