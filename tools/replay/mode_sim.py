@@ -532,8 +532,11 @@ def run_simulation(grid, bufs, toggles):
           a_exp = 0.0
 
       # Hybrid Experimental Mode continuous fusion
-      a_hem = hybrid.update(v_ego, v_cruise, lead, model_v2, a_chill, a_exp, t_follow=t_follow)
-      authority = hybrid.exp_authority
+      a_hem, _should_stop_fused = hybrid.update(
+        v_ego=v_ego, v_cruise=v_cruise, lead_one=lead, model_v2=model_v2,
+        a_chill=a_chill, a_exp=a_exp,
+      )
+      authority = hybrid.w_vision
 
       model_v0 = v_ego
       if model_v2 is not None:

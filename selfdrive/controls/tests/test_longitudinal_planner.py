@@ -562,21 +562,23 @@ def test_experimental_mlsim_uses_vehicle_min_accel_floor(model_version):
   assert planner.output_a_target < comfort_min_accel
 
 
-def test_hybrid_mode_shields_unconfirmed_vision_braking():
+def test_hybrid_mode_tempers_unconfirmed_vision_braking_with_chill():
   v_ego = 20.0
   desired_accel = -2.0
   CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
 
-  # Hybrid mode clamps unconfirmed vision braking to a gentle coast (no lead,
-  # model not predicting a stop), instead of passing the raw E2E target.
+  # HEM is the final arbitrator: on open road (no lead, model not predicting a
+  # stop) it blends the raw E2E brake with the conservative Chill target rather
+  # than passing the full -2.0 straight through, but it still brakes (no creep).
   hybrid_toggles = SimpleNamespace(**vars(make_toggles("v11")), hybrid_experimental_mode=True)
   planner_hybrid = LongitudinalPlanner(CP, init_v=v_ego)
   sm = make_sm(v_ego, desired_accel, -2.0, experimental_mode=False)
   planner_hybrid.update(sm, hybrid_toggles)
   assert planner_hybrid.mode == "acc"
-  assert planner_hybrid.output_a_target >= -0.6
+  assert planner_hybrid.output_a_target < 0.0, "HEM must still brake on a strong Exp decel"
+  assert planner_hybrid.output_a_target > desired_accel, "HEM must temper the raw E2E brake with Chill"
 
-  # Without the hybrid shield, experimental mode lets the raw E2E target through.
+  # Without HEM, experimental mode lets the raw E2E target through.
   planner_exp = LongitudinalPlanner(CP, init_v=v_ego)
   sm_exp = make_sm(v_ego, desired_accel, -2.0, experimental_mode=True)
   planner_exp.update(sm_exp, make_toggles("v11"))

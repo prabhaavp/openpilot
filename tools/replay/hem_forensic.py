@@ -68,27 +68,19 @@ SERVICES = {
 DIAG_KEYS = [
   # inputs
   "v_ego", "v_cruise", "a_chill", "a_exp",
+  "should_stop_chill", "should_stop_exp",
   "lead_status", "lead_d_rel", "lead_v_lead",
   # vision intent
-  "v_min", "v_horizon", "speed_drop_ratio", "stop_target_active", "stop_confidence",
-  "model_decel_strength", "w_vision",
-  # kinematic stop
-  "d_min", "d_stop_effective", "a_kinematic_stop", "a_exp_effective",
-  # authority
-  "base_auth", "alpha_exp",
-  # throttle path
-  "a_throttle_raw", "a_throttle_optimal", "a_throttle_fused", "overshoot_risk",
-  # brake path
-  "a_chill_brake", "a_brake_fused",
-  # regime
-  "is_braking_phase", "w_accel", "a_fused",
-  # standstill anchor
-  "is_stopped", "is_staying_stopped", "model_stop_predicted",
-  "departing", "standstill_weight", "a_anchored",
-  # safety
-  "d_safe", "distance_ratio", "lead_safety_risk", "lead_safety_active", "a_safe",
-  # slew
-  "da", "jerk_limit", "max_delta", "a_out", "prev_a_target",
+  "has_full_trajectory", "v_horizon", "v_short", "v_min",
+  "speed_drop_ratio", "model_decel_strength",
+  "raw_vision_metric", "w_target", "w_vision",
+  # departure / override
+  "lead_departing", "vision_departing", "driver_override", "is_departing",
+  "horizon_stopping",
+  # fusion
+  "a_brake_fused", "a_throttle_fused", "is_stopping_event", "exp_dominant",
+  # standstill handshake
+  "standstill_intent", "should_stop_fused", "a_out",
 ]
 REGIME_KEYS = ["regime", "standstill"]
 
@@ -152,12 +144,18 @@ def run_forensic(grid, bufs, toggles):
   out["brake_pressed"] = np.zeros(n, dtype=bool)
   out["gas_pressed"] = np.zeros(n, dtype=bool)
   for k in DIAG_KEYS:
-    if k in ("is_braking_phase", "model_stop_predicted", "lead_safety_active", "departing"):
+    if k in ("should_stop_chill", "should_stop_exp", "lead_status", "has_full_trajectory",
+             "lead_departing", "vision_departing", "driver_override", "is_departing",
+             "horizon_stopping", "is_stopping_event", "exp_dominant", "standstill_intent",
+             "should_stop_fused"):
       out["hem_" + k] = np.zeros(n, dtype=bool)
     else:
       out["hem_" + k] = np.zeros(n)
   out["hem_regime"] = np.zeros(n, dtype=bool)
   out["hem_standstill"] = np.zeros(n, dtype=bool)
+  # Gates dropped in the new HEM design map onto the surviving output signal.
+  out["hem_a_anchored"] = np.full(n, np.nan)
+  out["hem_a_safe"] = np.zeros(n)
 
   real_monotonic = time.monotonic
   fake_clock = [0.0]
@@ -298,7 +296,18 @@ def run_forensic(grid, bufs, toggles):
         except Exception:
           a_exp = 0.0
 
-      a_hem = hybrid.update(v_ego, v_cruise, lead, model_v2, a_chill, a_exp, t_follow=t_follow)
+      should_stop_exp = False
+      if model_v2 is not None:
+        try:
+          should_stop_exp = bool(getattr(getattr(model_v2, "action", None), "shouldStop", False))
+        except Exception:
+          should_stop_exp = False
+      a_hem, should_stop_fused = hybrid.update(
+        v_ego=v_ego, v_cruise=v_cruise, lead_one=lead, model_v2=model_v2,
+        a_chill=a_chill, a_exp=a_exp,
+        should_stop_exp=should_stop_exp,
+        should_stop_chill=bool(getattr(lplan, "shouldStop", False)),
+      )
 
       model_v0 = v_ego
       if model_v2 is not None:
@@ -315,7 +324,7 @@ def run_forensic(grid, bufs, toggles):
       out["a_chill"][i] = a_chill
       out["a_exp"][i] = a_exp
       out["hem_a"][i] = a_hem
-      out["hem_authority"][i] = hybrid.exp_authority
+      out["hem_authority"][i] = hybrid.w_vision
       out["lead_status"][i] = lead.status
       out["lead_d_rel"][i] = lead.dRel
       out["lead_v_lead"][i] = lead.vLead
@@ -335,6 +344,8 @@ def run_forensic(grid, bufs, toggles):
             out["hem_" + k][i] = 0.0
       out["hem_regime"][i] = hybrid.diag.get("regime") == "brake"
       out["hem_standstill"][i] = bool(hybrid.diag.get("standstill", False))
+      out["hem_a_anchored"][i] = out["hem_a"][i] if out["hem_standstill"][i] else np.nan
+      out["hem_a_safe"][i] = out["hem_a"][i]
   finally:
     time.monotonic = real_monotonic
 
@@ -357,7 +368,7 @@ def detect_incidents(out, t):
     v = out["v_ego"][i]
     w = out["hem_w_vision"][i]
     ac = out["hem_a_chill"][i]
-    ae_eff = out["hem_a_exp_effective"][i]
+    ae_eff = out["hem_a_exp"][i]
     aout = out["hem_a"][i]
     if v > 0.5 and w > 0.3 and ac > -0.3 and ae_eff >= 0.0 and abs(aout) < 0.25:
       idxs.append(i)
@@ -380,7 +391,7 @@ def classify_failure(out, sl, i_brake):
   if pre.stop <= pre.start:
     return "UNKNOWN", {}
   v = out["v_ego"][pre]
-  exp_eff = out["hem_a_exp_effective"][pre]
+  exp_eff = out["hem_a_exp"][pre]
   wv = out["hem_w_vision"][pre]
   hem = out["hem_a"][pre]
   chill = out["hem_a_chill"][pre]
@@ -478,9 +489,9 @@ def print_forensic_log(out, sl, t0):
       f"{'<<<<' if out['a_ego'][i] < -2.0 else ('Y' if out['brake_pressed'][i] else '-'):>6}",
       f"{out['hem_a_chill'][i]:6.2f}",
       f"{out['hem_a_exp'][i]:6.2f}",
-      f"{out['hem_a_exp_effective'][i]:6.2f}",
+      f"{out['hem_a_exp'][i]:6.2f}",
       f"{out['hem_w_vision'][i]:5.2f}",
-      f"{out['hem_alpha_exp'][i]:5.2f}",
+      f"{out['hem_authority'][i]:5.2f}",
       f"{'brake' if out['hem_regime'][i] else 'throttle':>8}",
       f"{'Y' if out['hem_standstill'][i] else '-':>5}",
       f"{out['hem_a_brake_fused'][i]:6.2f}",
@@ -606,8 +617,8 @@ def plot_results(out, t0, args, incident_idxs):
 
   # vision weight, authority, exp_effective
   axs[2].plot(t0, out["hem_w_vision"], color="tab:red", lw=1.3, label="w_vision")
-  axs[2].plot(t0, out["hem_alpha_exp"], color="tab:purple", lw=1.3, label="exp authority")
-  axs[2].plot(t0, out["hem_a_exp_effective"], color="tab:olive", lw=1.0, ls="--", label="exp effective a")
+  axs[2].plot(t0, out["hem_authority"], color="tab:purple", lw=1.3, label="exp authority")
+  axs[2].plot(t0, out["hem_a_exp"], color="tab:olive", lw=1.0, ls="--", label="exp a")
   axs[2].axhline(0.3, color="tab:red", lw=0.6, ls=":")
   axs[2].set_ylim(-1, 1.5)
   axs[2].set_ylabel("weight")

@@ -36,8 +36,8 @@ def _is_hybrid_experimental_mode(state: UIState) -> bool:
 def _hem_exp_dominant(state: UIState) -> bool:
   """True when the fused output tracks the E2E/vision input more than chill ACC.
 
-  Uses the planner's per-frame comparison (HEMExpDominant) rather than the raw
-  exp_authority, which is inflated by the E2E Authority Bias baseline.
+  Uses the planner's per-frame comparison (HEMExpDominant), which reflects the
+  active fusion regime rather than a raw vision weight.
   """
   params_memory = getattr(state, "params_memory", None)
   if params_memory is None:
