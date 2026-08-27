@@ -8,16 +8,6 @@ def lerp(a: float, b: float, t: float) -> float:
   return float((1.0 - t) * a + t * b)
 
 
-def sigmoid(x: float, k: float = 4.0, x0: float = 0.0) -> float:
-  """Smooth 0-to-1 activation curve."""
-  z = np.clip(-k * (x - x0), -30.0, 30.0)
-  return float(1.0 / (1.0 + np.exp(z)))
-
-
-def smooth_min(a: float, b: float, k: float = 6.0) -> float:
-  return lerp(b, a, sigmoid(b - a, k=k))
-
-
 class HybridExperimentalMode:
   """
   Final Arbitrator between Chill (MPC Cruise/Radar) and Exp (Vision E2E):
@@ -52,9 +42,9 @@ class HybridExperimentalMode:
     self.VISION_BRAKE_SENSITIVITY = float(np.clip(vision_brake_sensitivity, 0.0, 2.0))
 
   def update(self, v_ego, v_cruise, lead_one, model_v2, a_chill, a_exp,
-             should_stop_exp=False, should_stop_chill=False):
+             should_stop_exp=False, should_stop_chill=False, gas_pressed=False):
 
-    # Robustness: never let non-finite or corrupt inputs propagate into the blend.
+    #never let non-finite or corrupt inputs propagate into the fusion.
     if not np.isfinite(a_chill):
       a_chill = float(self.prev_a_target)
     if not np.isfinite(a_exp):
@@ -79,13 +69,13 @@ class HybridExperimentalMode:
     lead_d = float(getattr(lead_one, "dRel", 150.0))
 
     # 2. Vision Departure / Driver Override Detection (Priority Check)
-    lead_departing = lead_status and (lead_v > 0.5)
-    vision_departing = (v_horizon > 1.2) and (a_exp > 0.1)
-    driver_override = (a_chill > 0.8)
+    at_standstill = v_ego < 0.8
+    lead_departing = at_standstill and lead_status and (lead_v > 0.6) and (lead_v - v_ego > 0.4)
+    vision_departing = at_standstill and (v_horizon > 1.5) and (a_exp > 0.15)
+    driver_override = bool(gas_pressed)
     is_departing = lead_departing or vision_departing or driver_override
 
     # 3. Vision Stop & Decel Detection
-    # Do not latch horizon_stopping if the lead is actively pulling away or driver commands takeoff
     if is_departing:
       horizon_stopping = False
     else:
@@ -115,12 +105,9 @@ class HybridExperimentalMode:
     else:
       self.w_vision = max(0.0, self.w_vision - 0.04)
 
-    # 5. Dual-Regime blend
+    # 5. Dual-Regime Fusion
     # Braking Regime: Pure vision braking when model demands it
-    if a_exp < 0.0:
-      a_brake_fused = min(a_chill, a_exp)
-    else:
-      a_brake_fused = min(a_chill, a_exp)
+    a_brake_fused = min(a_chill, a_exp)
 
     # Throttle Regime: Follow Chill MPC cruise with optional Exp bias
     a_throttle_fused = a_chill + max(0.0, a_exp - a_chill) * max(0.0, self.HYBRID_EXP_BIAS)
@@ -129,8 +116,6 @@ class HybridExperimentalMode:
     is_stopping_event = (self.w_vision > 0.3) or horizon_stopping
     if is_stopping_event and not is_departing:
       a_out = a_brake_fused
-      if horizon_stopping and v_ego < 2.0:
-        a_out = min(a_out, -0.6)  # Standstill anchor into full stop
       self.last_exp_dominant = True
     else:
       a_out = lerp(a_throttle_fused, a_brake_fused, self.w_vision)
@@ -138,7 +123,7 @@ class HybridExperimentalMode:
 
     # 6. Authoritative Standstill Handshake
     standstill_intent = (v_ego < 0.5 and (v_horizon < 0.4 or should_stop_exp)) and not is_departing
-    should_stop_fused = bool((should_stop_chill or should_stop_exp or standstill_intent) and not is_departing)
+    should_stop_fused = bool(should_stop_chill or ((should_stop_exp or standstill_intent) and not is_departing))
 
     if self.record_diag:
       self.diag = {

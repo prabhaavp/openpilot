@@ -2,7 +2,7 @@
 """HEM Telemetry Exporter.
 
 Extracts real telemetry from target segments and saves them to a portable JSON file,
-including authoritative selfdriveState fields (state, active, experimentalMode, alert).
+capturing the raw model action intents, radar lead states, and planner controls.
 """
 import os
 import sys
@@ -23,21 +23,39 @@ ROUTES_TO_EXPORT = [
   ("afb7ef2ed593d651/000000b9--976a3b50cb", 6, "Red Light"),
 ]
 
+
+def serialize_lead(lead_msg):
+  if lead_msg is None:
+    return {"status": False, "dRel": 150.0, "vLead": 0.0, "aLeadK": 0.0, "yRel": 0.0, "radar": False}
+  return {
+    "status": bool(getattr(lead_msg, "status", False)),
+    "dRel": float(getattr(lead_msg, "dRel", 150.0)),
+    "vLead": float(getattr(lead_msg, "vLead", 0.0)),
+    "aLeadK": float(getattr(lead_msg, "aLeadK", 0.0)),
+    "yRel": float(getattr(lead_msg, "yRel", 0.0)),
+    "radar": bool(getattr(lead_msg, "radar", False)),
+    "modelProb": float(getattr(lead_msg, "modelProb", 0.0)),
+  }
+
+
 def serialize_model(model_msg):
-  """Extracts the velocity, position, and acceleration lists from modelV2."""
-  try:
-    v_list = list(model_msg.velocity.x)
-  except Exception:
-    v_list = []
-  try:
-    x_list = list(model_msg.position.x)
-  except Exception:
-    x_list = []
-  try:
-    a_list = list(model_msg.acceleration.x)
-  except Exception:
-    a_list = []
-  return {"velocity": v_list, "position": x_list, "acceleration": a_list}
+  """Extracts velocity, position, acceleration lists and raw action intents from modelV2."""
+  v_list = list(getattr(getattr(model_msg, "velocity", None), "x", []))
+  x_list = list(getattr(getattr(model_msg, "position", None), "x", []))
+  a_list = list(getattr(getattr(model_msg, "acceleration", None), "x", []))
+
+  action = getattr(model_msg, "action", None)
+  a_exp_raw = float(getattr(action, "desiredAcceleration", 0.0)) if action is not None else 0.0
+  should_stop_exp_raw = bool(getattr(action, "shouldStop", False)) if action is not None else False
+
+  return {
+    "velocity": v_list,
+    "position": x_list,
+    "acceleration": a_list,
+    "desiredAcceleration": a_exp_raw,
+    "shouldStop": should_stop_exp_raw,
+  }
+
 
 def export_routes():
   exported_data = {}
@@ -69,6 +87,7 @@ def export_routes():
         continue
 
     car_state_msgs = []
+    radar_state_msgs = []
     model_msgs = []
     splan_msgs = []
     lplan_msgs = []
@@ -82,6 +101,8 @@ def export_routes():
         t = msg.logMonoTime * 1e-9
         if which == "carState":
           car_state_msgs.append((t, msg.carState))
+        elif which == "radarState":
+          radar_state_msgs.append((t, msg.radarState))
         elif which == "modelV2":
           model_msgs.append((t, msg.modelV2))
         elif which == "starpilotPlan":
@@ -99,6 +120,7 @@ def export_routes():
       continue
 
     car_state_msgs.sort(key=lambda x: x[0])
+    radar_state_msgs.sort(key=lambda x: x[0])
     model_msgs.sort(key=lambda x: x[0])
     splan_msgs.sort(key=lambda x: x[0])
     lplan_msgs.sort(key=lambda x: x[0])
@@ -109,6 +131,7 @@ def export_routes():
     frames = []
     for t_model, model_msg in model_msgs:
       cs = next((m for t, m in reversed(car_state_msgs) if t <= t_model), None)
+      rs = next((m for t, m in reversed(radar_state_msgs) if t <= t_model), None)
       splan = next((m for t, m in reversed(splan_msgs) if t <= t_model), None)
       lplan = next((m for t, m in reversed(lplan_msgs) if t <= t_model), None)
       sd = next((m for t, m in reversed(selfdrive_msgs) if t <= t_model), None)
@@ -118,7 +141,6 @@ def export_routes():
       if cs is None:
         continue
 
-      # Engagement & State flags
       enabled = False
       state = 0
       active = False
@@ -136,7 +158,6 @@ def export_routes():
         state = 2 if enabled else 0
         active = enabled
 
-      # Fallback starpilotPlan experimental mode check if available
       if splan is not None and hasattr(splan, "experimentalMode"):
         exp_mode = exp_mode or bool(splan.experimentalMode)
 
@@ -150,19 +171,36 @@ def export_routes():
           cc_accel = getattr(act, "accel", None)
 
       op_braking = bool(cc_enabled and cc_brake > 0.05)
+      manual_brake = bool(cs.brakePressed) and not op_braking
 
-      # Manual driver brake (pedal pressed and not openpilot commanding the brake)
-      if cc is not None:
-        manual_brake = bool(cs.brakePressed) and not op_braking
-      else:
-        manual_brake = bool(cs.brakePressed)
+      # Lead tracks
+      lead_one_data = serialize_lead(getattr(rs, "leadOne", None))
+      lead_two_data = serialize_lead(getattr(rs, "leadTwo", None))
+      mpc_source = str(getattr(lplan, "longitudinalPlanSource", "lead0"))
+
+      # Raw model outputs
+      action = getattr(model_msg, "action", None)
+      a_exp_raw = float(getattr(action, "desiredAcceleration", 0.0)) if action is not None else 0.0
+      should_stop_exp_raw = bool(getattr(action, "shouldStop", False)) if action is not None else False
 
       frames.append({
         "t": t_model,
         "v_ego": float(cs.vEgo),
+        "a_ego": float(getattr(cs, "aEgo", 0.0)),
+        "standstill": bool(getattr(cs, "standstill", False)),
         "v_cruise": float(getattr(splan, "vCruise", getattr(cs, "vCruise", 0.0))),
+        # a_chill is the real planner-side output target from longitudinalPlan
         "a_chill": float(getattr(lplan, "aTarget", 0.0)),
-        "a_exp": float(getattr(model_msg.action, "desiredAcceleration", 0.0)),
+        "should_stop_chill": bool(getattr(lplan, "shouldStop", False)),
+        # Raw E2E vision neural net output (not modified by MPC)
+        "a_exp_raw": a_exp_raw,
+        "should_stop_exp_raw": should_stop_exp_raw,
+        "accel_jerk": float(getattr(splan, "accelerationJerk", 1.0)),
+        "min_accel": float(getattr(splan, "minAcceleration", -3.5)),
+        "max_accel": float(getattr(splan, "maxAcceleration", 1.5)),
+        "mpc_source": mpc_source,
+        "lead_one": lead_one_data,
+        "lead_two": lead_two_data,
         "model_trajectory": serialize_model(model_msg),
         "enabled": enabled,
         "state": state,
@@ -171,9 +209,6 @@ def export_routes():
         "alert": alert,
         "brake_pressed": manual_brake,
         "brake_raw": bool(cs.brakePressed),
-        "op_braking": op_braking,
-        "op_brake_cmd": cc_brake,
-        "op_accel_cmd": None if cc_accel is None else float(cc_accel),
         "gas_pressed": bool(cs.gasPressed),
       })
 
@@ -193,6 +228,7 @@ def export_routes():
   with open(output_file, "w") as f:
     json.dump(exported_data, f, indent=2)
   print(f"\nSaved export payload to {output_file}")
+
 
 if __name__ == "__main__":
   export_routes()

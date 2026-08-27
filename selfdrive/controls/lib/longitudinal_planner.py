@@ -2997,6 +2997,7 @@ class LongitudinalPlanner:
         a_exp=a_exp_raw,
         should_stop_exp=should_stop_exp,
         should_stop_chill=should_stop_chill,
+        gas_pressed=bool(getattr(sm['carState'], 'gasPressed', False)),
       )
 
       # HEM output can never exceed the physical

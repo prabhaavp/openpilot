@@ -5,8 +5,6 @@ import pytest
 from openpilot.starpilot.controls.lib.hybrid_experimental_mode import (
   HybridExperimentalMode,
   lerp,
-  sigmoid,
-  smooth_min,
 )
 
 
@@ -38,14 +36,6 @@ def run(controller, *, v_ego=20.0, v_cruise=30.0, lead=None, model=None, a_chill
   for _ in range(frames):
     result, should_stop = controller.update(v_ego, v_cruise, lead, model, a_chill, a_exp)
   return result, should_stop
-
-
-def test_soft_operators_are_continuous_and_bounded():
-  for value in (-5.0, -0.1, 0.0, 0.1, 5.0):
-    assert 0.0 < sigmoid(value) < 1.0
-  assert smooth_min(1.0, 2.0) == pytest.approx(1.0, abs=1e-2)
-  assert smooth_min(2.0, 1.0) == pytest.approx(1.0, abs=1e-2)
-  assert lerp(10.0, 20.0, 0.5) == pytest.approx(15.0, abs=1e-3)
 
 
 def test_update_returns_accel_and_should_stop_tuple():
@@ -228,7 +218,7 @@ def test_lead_departure_releases_vision_latch():
 
   depart_model = FakeModel(velocity=[10.0] * 33)
   lead = FakeLead(status=True, d_rel=30.0, v_lead=8.0)
-  a, should_stop = controller.update(5.0, 25.0, lead, depart_model, 0.5, 0.5)
+  a, should_stop = controller.update(0.3, 25.0, lead, depart_model, 0.5, 0.5)
   assert controller.w_vision == 0.0, "Lead departure must release the vision latch instantly"
   assert a > 0.0
   assert not should_stop
