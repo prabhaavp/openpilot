@@ -310,3 +310,41 @@ def test_no_kinematic_brake_on_gentle_high_horizon_slowdown():
   a = run(controller, v_ego=20.0, v_cruise=20.0, lead=FakeLead(status=False),
           model=model, a_chill=0.0, a_exp=-0.1, frames=5)
   assert a > -0.5, f"Gentle high-horizon slowdown must not hard-brake, got {a}"
+
+
+def _stop_sign_dip_model(min_at_idx, v_min, v_horizon):
+  """Trajectory that slows to v_min at min_at_idx then re-accelerates to v_horizon
+  (the 'slow to ~1 m/s then speed up again' stop-sign profile seen on device)."""
+  traj_v = np.zeros(33)
+  idxs = sorted({0, int(min_at_idx), 23, 32})
+  pts = {0: 1.85, int(min_at_idx): v_min, 23: 5.8, 32: v_horizon}
+  for a, b in zip(idxs, idxs[1:]):
+    va, vb = pts[a], pts[b]
+    for i in range(a, b + 1):
+      traj_v[i] = va + (vb - va) * (i - a) / (b - a)
+  traj_x = np.linspace(0.0, 70.0, 33)
+  return FakeModel(velocity=traj_v, position=traj_x)
+
+
+def test_stop_latch_not_released_when_model_reaccelerates_before_actual_stop():
+  """Regression: on the logged stop-sign approach the model predicts a dip to
+  ~0.9 m/s then RE-ACCELERATION to ~7 m/s. When the dip minimum reaches the
+  current frame (min_idx=0) the model flips a_exp positive. HEM must NOT treat
+  that as 'stop is over' while the car is still rolling at ~1.8 m/s with the
+  stop line ~2-4 m ahead. It must keep commanding a kinematic brake.
+  """
+  controller = make_controller(prev=-0.7)
+  lead = FakeLead(status=False)
+
+  # Phase 1: approach with the dip still ahead (model braking)
+  model_approach = _stop_sign_dip_model(min_at_idx=11, v_min=0.9, v_horizon=7.0)
+  for _ in range(40):
+    controller.update(1.85, 8.05, lead, model_approach, a_chill=-0.009, a_exp=-0.42, t_follow=1.45)
+
+  # Phase 2: model now predicts the minimum is at the CURRENT frame and re-accelerates
+  model_now = _stop_sign_dip_model(min_at_idx=0, v_min=1.57, v_horizon=8.33)
+  for _ in range(6):
+    a = controller.update(1.85, 8.05, lead, model_now, a_chill=-0.009, a_exp=0.12, t_follow=1.45)
+  # Pure math: at v=1.85 with ~2.5 m to the line, required decel = 1.85^2/(2*2.5) = 0.68 m/s^2
+  # HEM must still be braking hard, not letting the car creep through.
+  assert a <= -0.4, f"HEM released the stop brake on model re-acceleration before stopping, got {a}"
