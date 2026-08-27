@@ -76,8 +76,19 @@ class HybridExperimentalMode:
     is_departing = lead_departing or vision_departing or driver_override
 
     # 3. Vision Stop & Decel Detection
+    # A stop sign / red light shows up as the model predicting a deceleration to
+    # (near) standstill somewhere inside the lookahead window, even when it resumes
+    # driving past the stop line (so v_horizon stays high). Use a permissive
+    # threshold so it fires during a 15-20 mph approach instead of only centimeters
+    # before the line; the old far-horizon check (v_horizon<0.8) and the strict
+    # v_short<1.5 mid-horizon check both failed to trigger in time.
+    # The dip must either reach (near) standstill, or drop well below current speed,
+    # so a slow crawl (e.g. 5 mph) on an open road never latches a phantom stop.
+    traj_dips_to_stop = has_full_trajectory and (
+      (v_min < 1.0) or (v_min < 3.0 and v_min < v_ego * 0.7)
+    )
     horizon_stopping = not is_departing and (
-      (v_horizon < 0.8) or (has_full_trajectory and v_short < 1.5) or should_stop_exp
+      (v_horizon < 0.8) or traj_dips_to_stop or should_stop_exp
     )
 
     speed_drop_ratio = max(0.0, (v_ego - v_min) / max(v_ego, 2.0))
