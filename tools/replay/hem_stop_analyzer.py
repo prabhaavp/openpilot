@@ -128,7 +128,7 @@ def simulate_hem(data_frames):
     lead = MockLead(status=False)
 
     # Execute state update
-    a_out = controller.update(
+    a_out, should_stop_fused = controller.update(
       v_ego=frame["v_ego"],
       v_cruise=frame["v_cruise"],
       lead_one=lead,
@@ -139,6 +139,7 @@ def simulate_hem(data_frames):
 
     diag = dict(controller.diag)
     diag["a_out"] = float(a_out)
+    diag["should_stop_fused"] = bool(should_stop_fused)
     diag["t_rel"] = frame["t"] - data_frames[0]["t"]
     sim_results.append(diag)
 
@@ -155,10 +156,10 @@ def analyze_failures(route_str, segment, label, results):
   max_v = max(v_speeds)
   min_v = min(v_speeds)
 
-  # Identify frames with stop signs visible in model (high stop confidence or tracked distance exists)
+  # Identify frames with a stop visible to vision (horizon stop or exp stop flag)
   active_frames = []
   for idx, r in enumerate(results):
-    if (r.get("stop_confidence", 0.0) > 0.1) or (r.get("tracked_stop_dist") is not None):
+    if r.get("horizon_stopping", False) or r.get("should_stop_exp", False) or r.get("w_vision", 0.0) > 0.1:
       active_frames.append(idx)
 
   if not active_frames:
@@ -181,22 +182,22 @@ def analyze_failures(route_str, segment, label, results):
     r = results[idx]
 
     # 1. Check for premature latch decay (decaying while still moving fast)
-    if r.get("w_vision", 0.0) < 0.2 and r.get("v_ego", 0.0) > 2.0 and r.get("stop_confidence", 0.0) > 0.4:
+    if r.get("w_vision", 0.0) < 0.2 and r.get("v_ego", 0.0) > 2.0 and r.get("horizon_stopping", False):
       latch_decays += 1
 
-    # 2. Check for tracked stop distance wiping out/clearing while speed is high
+    # 2. Check for stop detection being cleared while speed is still high
     if idx > start_idx:
       prev_r = results[idx - 1]
-      if prev_r.get("tracked_stop_dist") is not None and r.get("tracked_stop_dist") is None:
-        if r.get("v_ego", 0.0) > 1.0 and not r.get("vision_departing", False):
+      if prev_r.get("horizon_stopping", False) and not r.get("horizon_stopping", False):
+        if r.get("v_ego", 0.0) > 1.0 and not r.get("is_departing", False):
           tracking_resets += 1
 
-    # 3. Check for early departure trigger causing positive creep acceleration override
-    if r.get("departing", False) and r.get("v_ego", 0.0) > 1.5 and r.get("d_stop_calc", 999) > 0.5:
+    # 3. Check for departure lockout firing while still approaching a predicted stop
+    if r.get("is_departing", False) and r.get("v_ego", 0.0) > 1.5 and r.get("horizon_stopping", False):
       early_departures += 1
 
-    # 4. Check if the kinematic decel collapsed near the stop line
-    if r.get("a_kinematic_stop", 0.0) > -0.1 and r.get("v_ego", 0.0) > 1.0 and 0.5 < r.get("tracked_stop_dist", 999) < 8.0:
+    # 4. Check if the brake floor collapsed near the stop line
+    if r.get("a_brake_fused", 0.0) > -0.1 and r.get("v_ego", 0.0) > 1.0 and r.get("horizon_stopping", False):
       kinematic_collapses += 1
 
   # Determine primary failure mode
@@ -204,11 +205,11 @@ def analyze_failures(route_str, segment, label, results):
   if latch_decays > 5:
     failure_modes.append("Premature Latch Decay (w_vision collapsed)")
   if tracking_resets > 0:
-    failure_modes.append("Stop Distance Tracker Cleared Early")
+    failure_modes.append("Stop Detection Cleared Early")
   if early_departures > 5:
-    failure_modes.append("Early Departure Lockout Bypass (departing=True while approaching)")
+    failure_modes.append("Early Departure Lockout Bypass (is_departing while approaching)")
   if kinematic_collapses > 5:
-    failure_modes.append("Kinematic Stop Floor Collapse near stop line")
+    failure_modes.append("Kinematic Brake Floor Collapse near stop line")
 
   failure_mode = " / ".join(failure_modes) if failure_modes else "Weak general deceleration tracking"
   outcome = f"Blew past stop line. Min speed reached: {min_v:.2f} m/s." if min_v > 0.5 else "Stopped but late/harsh."
@@ -255,17 +256,13 @@ def run_suite():
     # General findings
     f.write("COMMON STRUCTURAL ROOT CAUSES IDENTIFIED:\n")
     f.write("------------------------------------------\n")
-    f.write("1. Stop Tracker Resetting on Model Re-acceleration:\n")
-    f.write("   When stop lines approach index 0, the model's trajectory velocity endpoint\n")
-    f.write("   flip positive (a_exp > 0.1, v_horizon > 0.5). Because 'model_stop_predicted'\n")
-    f.write("   evaluates to False, the 'vision_departing' or 'departing' signal fires TRUE.\n")
-    f.write("   This instantly triggers 'self.tracked_stop_dist = None', deleting the\n")
-    f.write("   kinematic decel floor while the car is still traveling at speed close to the line.\n\n")
+    f.write("1. Stop Detection Cleared on Model Re-acceleration:\n")
+    f.write("   When the trajectory velocity endpoint flips positive (a_exp > 0.1, v_horizon > 1.2)\n")
+    f.write("   the 'vision_departing' / 'is_departing' signal fires TRUE and clears 'horizon_stopping'\n")
+    f.write("   while the car is still traveling at speed close to the line, dropping the brake floor.\n\n")
     f.write("2. Insufficient Latch Sustainability (w_vision decays):\n")
-    f.write("   If the model stops outputting a highly confident slow-down endpoint, even briefly,\n")
-    f.write("   the soft latch 'w_vision_filtered' is multiplied by 0.90 or 0.97. If it decays\n")
-    f.write("   below 0.25, the system unlocks the throttle override lockouts, reverting to CCM/chill\n")
-    f.write("   creep commands.\n\n")
+    f.write("   If the model stops outputting a low velocity endpoint, even briefly, the vision weight\n")
+    f.write("   decays toward zero and unlocks cruise throttle while still closing on the stop.\n\n")
 
     f.write("DETAILED SEGMENT TELEMETRY BREAKDOWN:\n")
     f.write("-------------------------------------\n")
@@ -294,7 +291,7 @@ def run_suite():
     v_ego = [r["v_ego"] for r in results]
     w_vis = [r["w_vision"] for r in results]
     a_out = [r["a_out"] for r in results]
-    a_kin = [r["a_kinematic_stop"] for r in results]
+    a_kin = [r["a_brake_fused"] for r in results]
 
     # Left column: Speeds and Latch activations
     ax_l = axes[idx, 0]
