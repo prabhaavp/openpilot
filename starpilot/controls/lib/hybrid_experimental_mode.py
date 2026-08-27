@@ -94,33 +94,29 @@ class HybridExperimentalMode:
     speed_drop_ratio = max(0.0, (v_ego - v_min) / max(v_ego, 2.0))
     model_decel_strength = max(0.0, -a_exp * 0.5)
 
+    # 4. Instant Braking Authority
+    # Braking is always granted to Experimental Mode without delay, filtering, or
+    # 0.5x dilution: the moment vision commands meaningful deceleration (a_exp < -0.2
+    # and stronger than Chill) or any stop condition fires, take full brake authority.
+    vision_braking_active = not is_departing and (
+      horizon_stopping or (a_exp < -0.2 and a_exp < a_chill)
+    )
+
     if is_departing:
-      raw_vision_metric = 0.0
-      w_target = 0.0
       self.w_vision = 0.0
+    elif vision_braking_active:
+      self.w_vision = 1.0  # Instant full braking authority
     else:
-      if horizon_stopping:
-        raw_vision_metric = 1.0
-      elif lead_status and lead_d < 40.0:
-        raw_vision_metric = max(speed_drop_ratio, model_decel_strength)
-      else:
-        raw_vision_metric = max(speed_drop_ratio, model_decel_strength) * 0.5
-
-      w_target = clamp(raw_vision_metric * self.VISION_BRAKE_SENSITIVITY, 0.0, 1.0)
-
-      # 4. Dynamic Filter (Fast Attack, Smooth Decay)
-      if w_target > self.w_vision:
-        self.w_vision = min(1.0, self.w_vision + 0.15)
-      else:
-        self.w_vision = max(0.0, self.w_vision - 0.04)
+      # Smooth decay back to chill when braking ceases
+      self.w_vision = max(0.0, self.w_vision - 0.05)
 
     # 5. Dual-Regime Fusion
     a_brake_fused = min(a_chill, a_exp)
     a_throttle_fused = a_chill + max(0.0, a_exp - a_chill) * self.HYBRID_EXP_BIAS
 
-    # Output Arbitration
-    is_stopping_event = (self.w_vision > 0.3) or horizon_stopping
-    self.last_exp_dominant = bool(is_stopping_event and not is_departing)
+    # Output Arbitration: if vision wants to brake, use full a_brake_fused immediately
+    is_stopping_event = bool(vision_braking_active or self.w_vision > 0.3)
+    self.last_exp_dominant = is_stopping_event
 
     if self.last_exp_dominant:
       a_out = a_brake_fused
@@ -142,13 +138,13 @@ class HybridExperimentalMode:
         "v_horizon": v_horizon, "v_short": v_short, "v_min": v_min,
         "speed_drop_ratio": speed_drop_ratio,
         "model_decel_strength": model_decel_strength,
-        "raw_vision_metric": raw_vision_metric, "w_target": w_target,
         "w_vision": self.w_vision,
         "lead_departing": lead_departing,
         "vision_departing": vision_departing,
         "driver_override": driver_override,
         "is_departing": is_departing,
         "horizon_stopping": horizon_stopping,
+        "vision_braking_active": vision_braking_active,
         "a_brake_fused": a_brake_fused,
         "a_throttle_fused": a_throttle_fused,
         "is_stopping_event": is_stopping_event,
