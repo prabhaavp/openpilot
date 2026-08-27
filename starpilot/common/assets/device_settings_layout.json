@@ -2707,6 +2707,27 @@
         "settings_tier": "simple"
       },
       {
+        "key": "PathSmoothingFactor",
+        "label": "Smoothing",
+        "description": "Reduce path, lane-line, and lead marker jitter by applying smoothing. Higher values produce a smoother but more delayed response.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 100.0,
+        "step": 1.0,
+        "parent_key": "ModelUI",
+        "settings_tier": "simple"
+      },
+      {
+        "key": "MinPathSpeed",
+        "label": "Min Path Speed",
+        "description": "Hide the driving path, lane lines, and lead markers while the car is stopped.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "parent_key": "ModelUI",
+        "settings_tier": "simple"
+      },
+      {
         "key": "NavigationUI",
         "label": "Navigation Widgets",
         "description": "Speed limits, and other navigation widgets.",
