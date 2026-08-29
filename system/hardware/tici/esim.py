@@ -16,7 +16,8 @@ class TiciLPA(LPABase):
     self.timeout_sec = 45
 
     if shutil.which('lpac') is None:
-      raise LPAError('lpac not found, must be installed!')
+      # raise LPAError('lpac not found, must be installed!')
+      return
 
   def list_profiles(self) -> list[Profile]:
     msgs = self._invoke('profile', 'list')
