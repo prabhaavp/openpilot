@@ -1210,16 +1210,8 @@ TMUX_LOGS_PATH = Path("/data/tmux_logs")
 
 
 def _filter_hem_log_lines(output):
-  """Reduce a tmux pane capture to only lines emitted by the [HEM] logger.
-
-  The Galaxy terminal is used to debug Hybrid Experimental Mode stopping, so only
-  [HEM] lines (which now carry a millisecond timestamp and full per-frame diag)
-  are surfaced; all other process output is dropped.
-  """
-  if not output:
-    return ""
-  lines = [line for line in output.splitlines() if "[HEM]" in line]
-  return "\n".join(lines) + ("\n" if lines else "")
+  """Return the full tmux pane capture unchanged (all process output)."""
+  return output or ""
 
 
 # Generous but bounded scrollback/capture depth for the [HEM] diagnostics. This
