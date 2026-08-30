@@ -152,6 +152,121 @@ function initialize() {
   initializeFileInput()
 }
 
+function SshControl() {
+  const state = reactive({
+    loaded: false,
+    enabled: false,
+    username: "",
+    hasKeys: false,
+    busy: false,
+    input: "",
+  })
+
+  async function refresh() {
+    try {
+      const response = await fetch("/api/ssh/status")
+      const result = await response.json()
+      state.enabled = !!result.enabled
+      state.username = result.username || ""
+      state.hasKeys = !!result.has_keys
+      state.input = result.username || ""
+    } catch (error) {
+      // leave defaults if the endpoint is unavailable
+    } finally {
+      state.loaded = true
+    }
+  }
+
+  async function enableSsh() {
+    if (state.busy) return
+    const username = state.input.trim()
+    if (!username) {
+      showSnackbar("Enter your GitHub username to enable SSH.", "error")
+      return
+    }
+    state.busy = true
+    try {
+      const response = await fetch("/api/ssh/configure", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "enable", username }),
+      })
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(result.error || "Failed to enable SSH.")
+      }
+      state.enabled = true
+      state.username = result.username || username
+      state.hasKeys = true
+      showSnackbar(result.message || "SSH enabled.")
+    } catch (error) {
+      showSnackbar(error?.message || "Failed to enable SSH.", "error")
+    } finally {
+      state.busy = false
+    }
+  }
+
+  async function disableSsh() {
+    if (state.busy) return
+    state.busy = true
+    try {
+      const response = await fetch("/api/ssh/configure", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "disable" }),
+      })
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(result.error || "Failed to disable SSH.")
+      }
+      state.enabled = false
+      state.username = ""
+      state.hasKeys = false
+      state.input = ""
+      showSnackbar(result.message || "SSH disabled.")
+    } catch (error) {
+      showSnackbar(error?.message || "Failed to disable SSH.", "error")
+    } finally {
+      state.busy = false
+    }
+  }
+
+  refresh()
+
+  return html`
+    <section class="toggle-control-widget ssh-control">
+      <div class="toggle-control-title">SSH Access</div>
+      <p class="toggle-control-text">
+        Enter your GitHub username to import its public SSH keys and enable SSH access, just like the device's Developer settings.
+      </p>
+      ${() => state.loaded && state.enabled ? html`
+        <div class="toggle-control-status ssh-status-enabled">
+          SSH is <strong>enabled</strong> with keys from GitHub user
+          <strong>${state.username || "unknown"}</strong>.
+        </div>
+      ` : ""}
+      <input
+        class="ssh-username-input"
+        type="text"
+        placeholder="GitHub username"
+        value="${() => state.input}"
+        @input="${(event) => { state.input = event.currentTarget.value }}"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      ${() => !state.enabled ? html`
+        <button class="toggle-control-button" @click="${enableSsh}" disabled="${() => state.busy}">
+          ${() => state.busy ? "Enabling..." : "Enable SSH"}
+        </button>
+      ` : html`
+        <button class="toggle-control-button toggle-control-button-danger" @click="${disableSsh}" disabled="${() => state.busy}">
+          ${() => state.busy ? "Disabling..." : "Disable SSH"}
+        </button>
+      `}
+    </section>
+  `
+}
+
 export function ToggleControl() {
   initialize()
   fetchFactoryResetStatus()
@@ -316,6 +431,8 @@ export function ToggleControl() {
       </section>
 
       ${TailscaleControl()}
+
+      ${SshControl()}
     </div>
     ${() => state.showResetDefaultModal ? Modal({
     title: "Reset Toggles",

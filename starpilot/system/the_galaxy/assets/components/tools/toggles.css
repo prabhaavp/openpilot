@@ -50,6 +50,38 @@
   text-align: center;
 }
 
+.ssh-control .ssh-username-input {
+  background-color: var(--input-bg);
+  border: 1px solid var(--sidebar-border-color);
+  border-radius: var(--border-radius-lg);
+  box-sizing: border-box;
+  color: var(--text-color);
+  font-size: var(--font-size-base);
+  margin-top: var(--padding-base);
+  padding: var(--border-radius-xl);
+  text-align: center;
+  width: 100%;
+}
+
+.ssh-control .ssh-username-input:focus {
+  border-color: var(--main-fg);
+  outline: none;
+}
+
+.ssh-control .ssh-username-input::placeholder {
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+.ssh-control .ssh-status-enabled {
+  border-color: rgba(94, 200, 200, 0.35);
+  text-align: center;
+}
+
+.ssh-control .toggle-control-button {
+  margin-top: var(--padding-base);
+}
+
 .toggle-control-danger-text {
   color: var(--text-color);
   margin: var(--padding-sm) 0 0;

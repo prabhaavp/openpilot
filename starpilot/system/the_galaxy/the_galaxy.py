@@ -7655,6 +7655,54 @@ def setup(app):
 
     return jsonify({"message": "Tailscale uninstalled!"}), 200
 
+  @app.route("/api/ssh/status", methods=["GET"])
+  def ssh_status():
+    username = params.get("GithubUsername", encoding="utf-8") or ""
+    return jsonify({
+      "enabled": params.get_bool("SshEnabled"),
+      "username": str(username).strip(),
+      "has_keys": bool(params.get("GithubSshKeys", encoding="utf-8")),
+    })
+
+  @app.route("/api/ssh/configure", methods=["POST"])
+  def ssh_configure():
+    data = request.get_json(silent=True) or {}
+    action = str(data.get("action", "")).strip().lower()
+
+    if action == "disable":
+      params.remove("GithubUsername")
+      params.remove("GithubSshKeys")
+      params.put_bool("SshEnabled", False)
+      return jsonify({"message": "SSH disabled."}), 200
+
+    if action != "enable":
+      return jsonify({"error": "Unknown SSH action."}), 400
+
+    username = str(data.get("username", "")).strip()
+    if not username:
+      return jsonify({"error": "Enter a GitHub username to enable SSH."}), 400
+
+    try:
+      response = requests.get(f"https://github.com/{username}.keys", timeout=15)
+      response.raise_for_status()
+      keys = response.text.strip()
+    except requests.exceptions.Timeout:
+      return jsonify({"error": "Request timed out fetching SSH keys."}), 504
+    except Exception:
+      return jsonify({"error": f"No SSH keys found for user '{username}'."}), 400
+
+    if not keys:
+      return jsonify({"error": f"No SSH keys found for user '{username}'."}), 400
+
+    params.put("GithubUsername", username)
+    params.put("GithubSshKeys", keys)
+    params.put_bool("SshEnabled", True)
+    return jsonify({
+      "message": f"SSH enabled with GitHub keys for '{username}'.",
+      "username": username,
+      "enabled": True,
+    }), 200
+
   @app.route("/api/themes", methods=["POST"])
   def save_theme_route():
     theme_path, error = utilities.create_theme(request.form, request.files)
