@@ -27,6 +27,7 @@ Commands:
   c3           Launch the large raylib UI from the isolated host cache.
   c4           Launch the small raylib UI from the isolated host cache.
   onroad       Launch replay plus desktop UI(s) from the isolated host cache.
+  galaxy       Launch the Galaxy web UI from the isolated host cache.
   replay       Build and run replay from the isolated host cache.
   cabana       Build and run cabana from the isolated host cache.
   plotjuggler  Run PlotJuggler helper from the isolated host cache.
@@ -63,7 +64,7 @@ resolve_host_bucket() {
   local name="${1:-shared}"
 
   case "${name}" in
-    shared|default|ui|c3|c4|onroad|replay|shell)
+    shared|default|ui|c3|c4|onroad|galaxy|replay|shell)
       echo "shared"
       ;;
     cabana)
@@ -143,6 +144,7 @@ release_host_lock() {
 acquire_host_lock() {
   local lock_label="$1"
   local notified=0
+  local prompted=0
 
   mkdir -p "${HOST_ROOT}"
 
@@ -162,9 +164,22 @@ acquire_host_lock() {
     fi
 
     if [[ "${notified}" == "0" ]]; then
-      echo "Waiting for host runtime lock in ${HOST_ROOT}. Another shorthand command is using it: $(lock_owner_summary)." >&2
+      echo "Host runtime lock is held in ${HOST_ROOT} by: $(lock_owner_summary)." >&2
       notified=1
     fi
+
+    if [[ "${prompted}" == "0" ]]; then
+      prompted=1
+      local answer=""
+      read -r -p "Remove the held lock and continue? [y/N] " answer < /dev/tty 2>/dev/null || true
+      if [[ "${answer,,}" == "y" ]]; then
+        echo "Removing held host runtime lock." >&2
+        rm -rf "${HOST_LOCK_DIR}"
+        continue
+      fi
+      echo "Keeping the lock; waiting for it to be released." >&2
+    fi
+
     sleep 1
   done
 }
@@ -484,6 +499,47 @@ launch_c4() {
   run_in_worktree "${WORK_DIR}/scripts/launch_ui_c4_desktop.sh" "${jobs}" "$@"
 }
 
+pick_free_galaxy_port() {
+  "${ROOT_DIR}/.venv/bin/python3" - <<'PY'
+import socket
+
+# Desktop ZMQ hashes replay service names into ports 8023-65535. Keep Galaxy
+# below that range so its HTTP server never steals a replay service port.
+for port in range(4600, 8023):
+  with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    try:
+      sock.bind(("127.0.0.1", port))
+    except OSError:
+      continue
+    print(port)
+    raise SystemExit(0)
+
+raise SystemExit("Unable to find a free local Galaxy port.")
+PY
+}
+
+launch_galaxy() {
+  sync_worktree
+  ensure_host_python_extensions
+
+  local port
+  port="$(pick_free_galaxy_port)"
+  local galaxy_dir="${HOME}/.comma/starpilot/data/galaxy"
+
+  echo "Starting local Galaxy session on port ${port}..."
+  (
+    cd "${WORK_DIR}"
+    setup_build_env
+    export_workdir_pythonpath
+    export SP_GALAXY_DIR="${galaxy_dir}"
+    export SP_GALAXY_HOST="127.0.0.1"
+    export SP_GALAXY_PORT="${port}"
+    export SP_GALAXY_DEBUG="${SP_GALAXY_DEBUG:-1}"
+    export SP_GALAXY_RELOAD="${SP_GALAXY_RELOAD:-0}"
+    exec "${WORK_DIR}/.venv/bin/python3" -m openpilot.starpilot.system.the_galaxy.the_galaxy
+  )
+}
+
 launch_onroad() {
   local jobs
   jobs="$(default_jobs)"
@@ -588,7 +644,7 @@ main() {
     help|-h|--help)
       usage
       ;;
-    c3|c4|onroad|replay|shell|python|pytest)
+    c3|c4|onroad|galaxy|replay|shell|python|pytest)
       set_host_bucket "shared"
       acquire_host_lock "${command} $*"
       ;;
@@ -631,6 +687,9 @@ main() {
       ;;
     onroad)
       launch_onroad "$@"
+      ;;
+    galaxy)
+      launch_galaxy "$@"
       ;;
     replay)
       launch_replay "$@"

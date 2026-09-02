@@ -75,6 +75,7 @@ All three entrypoints do the same thing. `./dev` is the shortest general-purpose
 
 - `./dev replay [args...]`
 - `./onroad [jobs] (--c3 | --c4 | --all | --replay-only) <route-or-replay-args...>`
+- `./dev galaxy`
 - `./dev cabana [args...]`
 - `./dev plotjuggler [args...]`
 - `./dev juggle [args...]`
@@ -95,6 +96,7 @@ Examples:
 
 ```bash
 ./dev replay
+./dev galaxy
 ./onroad --c3 f08912a233c1584f/2022-08-11--18-02-41/1
 ./onroad --c4 f08912a233c1584f/2022-08-11--18-02-41/1 --start 30
 ./onroad --all f08912a233c1584f/2022-08-11--18-02-41/1
@@ -170,6 +172,17 @@ Use `./onroad ...` when:
 - you want a recorded route to drive the desktop UI(s) on PC
 - you need replay and UI to share the same isolated host runtime and messaging prefix
 - you want the default side-by-side desktop UI launch without running separate replay/UI commands
+
+Use `./dev galaxy` when:
+
+- you want the full Galaxy web UI (all settings/toggles pages) in your browser on PC
+- you are developing the Galaxy frontend or API and want a fast, standalone reload loop
+- you do not need replay, params seeding, or the raylib on-road UI running
+
+By default Galaxy starts with Flask debug/reload enabled and picks a free localhost port; it
+prints the URL to open. `./dev galaxy` reuses the same isolated host worktree and Python
+extensions as the other host tools, so a source change while it runs hot-reloads from the
+worktree.
 
 Use `./c3` or `./c4` when:
 

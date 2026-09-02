@@ -4668,6 +4668,18 @@ def setup(app):
     response.headers["Expires"] = "0"
     return response
 
+  def _no_store_response(response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+  def _serve_new_ui():
+    ui_index_path = Path(app.static_folder) / "mobile" / "index.html"
+    if not ui_index_path.is_file():
+      return "Galaxy UI not found", 404
+    return _no_store_response(make_response(send_file(str(ui_index_path))))
+
   @app.route("/", methods=["GET"])
   def index():
     response = make_response(render_template("index.html"))
@@ -4675,6 +4687,210 @@ def setup(app):
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
     return response
+
+  @app.route("/classic", methods=["GET"])
+  @app.route("/classic/", methods=["GET"])
+  def classic_index():
+    return _no_store_response(make_response(render_template("index.html")))
+
+  @app.route("/mobile", methods=["GET"])
+  @app.route("/mobile/", methods=["GET"])
+  def mobile_index():
+    return _serve_new_ui()
+
+  @app.route("/api/bluetooth/status", methods=["GET"])
+  def bluetooth_status():
+    try:
+      status = BluetoothClient(timeout=10.0).status()
+      return jsonify(BluetoothClient.serialize_status(status)), 200
+    except Exception as error:
+      return jsonify({
+        "available": False,
+        "enabled": params.get_bool("BluetoothEnabled"),
+        "offroad": params.get_bool("IsOffroad"),
+        "selected_audio": params.get("BluetoothAudioAddress", encoding="utf-8") or "",
+        "devices": [],
+        "error": str(error),
+      }), 503
+
+  @app.route("/api/bluetooth/<operation>", methods=["POST"])
+  def bluetooth_operation(operation):
+    commands = {
+      "power": "set_power",
+      "scan": "start_scan",
+      "stop_scan": "stop_scan",
+      "pair": "pair",
+      "connect": "connect",
+      "disconnect": "disconnect",
+      "forget": "forget",
+      "select_audio": "select_audio",
+      "test_audio": "test_audio",
+      "pairing_response": "pairing_response",
+    }
+    command = commands.get(operation)
+    if command is None:
+      return jsonify({"error": "Unknown Bluetooth operation."}), 404
+    offroad_only = {"power", "scan", "stop_scan", "pair", "forget", "test_audio", "pairing_response"}
+    if operation in offroad_only and not params.get_bool("IsOffroad"):
+      return jsonify({"error": "Bluetooth settings can only be changed offroad."}), 409
+
+    data = request.get_json(silent=True) or {}
+    payload = {}
+    if command == "set_power":
+      payload["enabled"] = bool(data.get("enabled", False))
+    elif command == "pairing_response":
+      payload = {
+        "prompt_id": str(data.get("prompt_id", "")),
+        "accepted": bool(data.get("accepted", False)),
+        "value": str(data.get("value", "")),
+      }
+    elif command not in {"start_scan", "stop_scan"}:
+      payload["address"] = str(data.get("address", ""))
+      if not payload["address"] and command != "select_audio":
+        return jsonify({"error": "Bluetooth device address is required."}), 400
+    try:
+      client = BluetoothClient(timeout=10.0)
+      if command == "set_power":
+        client.set_power(payload["enabled"])
+        result = {}
+      else:
+        result = client.call(command, **payload)
+      return jsonify({"message": "Bluetooth operation started.", **result}), 200
+    except Exception as error:
+      return jsonify({"error": str(error)}), 503
+
+  @app.route("/api/wheel-controls/status", methods=["GET"])
+  def wheel_controls_status():
+    status = wheel_control_status(params, params_memory)
+    favorite_options = _get_available_favorite_slot_options()
+    favorite_option_by_key = {option["key"]: option for option in favorite_options}
+    controller_options = _get_available_controller_action_options()
+    controller_option_by_key = {option["key"]: option for option in controller_options}
+    slots = normalize_favorite_slots(
+      params.get(FAVORITE_SLOTS_PARAM),
+      params=params,
+      eligible_keys=set(favorite_option_by_key),
+    )
+    for slot in slots:
+      key = slot.get("key")
+      if key in favorite_option_by_key:
+        slot["label"] = favorite_option_by_key[key]["label"]
+    controller_slots = load_controller_action_slots(params, set(controller_option_by_key))
+    for slot in controller_slots:
+      key = slot.get("key")
+      if key in controller_option_by_key:
+        slot["label"] = controller_option_by_key[key]["label"]
+    status["slots"] = slots
+    status["controller_slots"] = controller_slots
+    status["controller_options"] = controller_options
+    is_metric = params.get_bool("IsMetric")
+    speed_minimum, speed_maximum = controller_speed_bounds(is_metric)
+    status["speed_unit"] = "km/h" if is_metric else "mph"
+    status["speed_minimum"] = speed_minimum
+    status["speed_maximum"] = speed_maximum
+    return jsonify(status), 200
+
+  @app.route("/api/wheel-controls/<operation>", methods=["POST"])
+  def wheel_controls_operation(operation):
+    if operation not in {"action", "learn", "cancel", "delete", "clear", "test", "test-stop", "joystick"}:
+      return jsonify({"error": "Unknown wheel control operation."}), 404
+    if not params.get_bool("IsOffroad"):
+      return jsonify({"error": "Wheel controls can only be configured offroad."}), 409
+
+    data = request.get_json(silent=True) or {}
+    try:
+      if operation == "action":
+        slot_index = int(data.get("slot", -1))
+        key = str(data.get("key") or "").strip()
+        options = _get_available_controller_action_options()
+        option_by_key = {option["key"]: option for option in options}
+        if not 0 <= slot_index < CONTROLLER_ACTION_SLOT_COUNT:
+          return jsonify({"error": f"Controller action must be between 1 and {CONTROLLER_ACTION_SLOT_COUNT}."}), 400
+        if key and key not in option_by_key:
+          return jsonify({"error": "That controller action is not available."}), 400
+        value = None
+        if key == CONTROLLER_ACTION_SET_SPEED:
+          try:
+            value = float(data.get("value"))
+          except (TypeError, ValueError):
+            return jsonify({"error": "Enter a valid set speed."}), 400
+          speed_minimum, speed_maximum = controller_speed_bounds(params.get_bool("IsMetric"))
+          if not math.isfinite(value) or not speed_minimum <= value <= speed_maximum:
+            unit = "km/h" if params.get_bool("IsMetric") else "mph"
+            return jsonify({"error": f"Set speed must be between {speed_minimum} and {speed_maximum} {unit}."}), 400
+        cancel_wheel_control_learning(params_memory, params)
+        set_controller_action_slot(
+          slot_index,
+          key or None,
+          str(option_by_key.get(key, {}).get("label") or ""),
+          params,
+          value=value,
+          eligible_keys=set(option_by_key),
+        )
+        return jsonify({"message": f"Controller Action #{slot_index + 1} updated."}), 200
+      if operation == "joystick":
+        device_id = str(data.get("device_id") or "").strip()
+        enabled = bool(data.get("enabled", False))
+        if enabled:
+          devices = wheel_control_status(params, params_memory).get("devices", [])
+          device = next((item for item in devices if item.get("device_id") == device_id), None)
+          if device is None:
+            return jsonify({"error": "Controller is not connected."}), 404
+          if not device.get("joystick_capable"):
+            return jsonify({"error": "This device does not expose joystick axes."}), 400
+        set_joystick_device(device_id, enabled, params)
+        return jsonify({"message": "Joystick controller updated."}), 200
+      if operation == "learn":
+        stop_wheel_control_testing(params_memory)
+        slot_index = int(data.get("slot", -1))
+        favorite_options = _get_available_favorite_slot_options()
+        favorite_eligible_keys = {option["key"] for option in favorite_options}
+        controller_options = _get_available_controller_action_options()
+        controller_eligible_keys = {option["key"] for option in controller_options}
+        slots = normalize_favorite_slots(
+          params.get(FAVORITE_SLOTS_PARAM),
+          params=params,
+          eligible_keys=favorite_eligible_keys,
+        )
+        if 0 <= slot_index < FAVORITE_SLOT_COUNT:
+          target = slots[slot_index]
+          target_name = f"Favorite #{slot_index + 1}"
+        elif FAVORITE_SLOT_COUNT <= slot_index < FAVORITE_SLOT_COUNT + CONTROLLER_ACTION_SLOT_COUNT:
+          controller_index = slot_index - FAVORITE_SLOT_COUNT
+          target = load_controller_action_slots(params, controller_eligible_keys)[controller_index]
+          target_name = f"Controller Action #{controller_index + 1}"
+        else:
+          return jsonify({"error": "Unknown controller mapping target."}), 400
+        if not target.get("enabled") or not target.get("key"):
+          return jsonify({"error": f"Configure {target_name} before learning a button."}), 400
+        start_wheel_control_learning(slot_index, params_memory, params)
+        return jsonify({"message": f"Press a button for {target_name}."}), 200
+      if operation == "cancel":
+        cancel_wheel_control_learning(params_memory, params)
+        return jsonify({"message": "Button learning cancelled."}), 200
+      if operation == "test":
+        cancel_wheel_control_learning(params_memory, params)
+        start_wheel_control_testing(params_memory, params)
+        return jsonify({"message": "Button testing enabled."}), 200
+      if operation == "test-stop":
+        stop_wheel_control_testing(params_memory)
+        return jsonify({"message": "Button testing disabled."}), 200
+      if operation == "clear":
+        clear_wheel_control_mappings(params)
+        cancel_wheel_control_learning(params_memory, params)
+        stop_wheel_control_testing(params_memory)
+        return jsonify({"message": "Wheel control mappings cleared."}), 200
+
+      identifier = str(data.get("id") or "").strip()
+      if not identifier:
+        return jsonify({"error": "Mapping id is required."}), 400
+      if not delete_wheel_control_mapping(identifier, params):
+        return jsonify({"error": "Wheel control mapping was not found."}), 404
+      return jsonify({"message": "Wheel control mapping removed."}), 200
+    except (TypeError, ValueError) as error:
+      return jsonify({"error": str(error)}), 400
+    except Exception as error:
+      return jsonify({"error": str(error)}), 503
 
   @app.route("/assets/components/tools/device_settings_layout.json", methods=["GET"])
   def device_settings_layout_asset():

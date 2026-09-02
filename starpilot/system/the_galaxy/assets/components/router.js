@@ -72,6 +72,7 @@ function Root() {
     createRoute("navdestination", "/set_navigation_destination", NavDestination),
     createRoute("navkeys", "/manage_navigation_keys", NavKeys),
     createRoute("root", "/", Home),
+    createRoute("classicRoot", "/classic", Home),
     createRoute("routes", "/dashcam_routes", RouteRecordings),
     createRoute("screen_recordings", "/screen_recordings", ScreenRecordings),
     createRoute("sentry", "/sentry", SentryMode),
