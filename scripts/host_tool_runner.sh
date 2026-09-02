@@ -508,7 +508,7 @@ import socket
 for port in range(4600, 8023):
   with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
     try:
-      sock.bind(("127.0.0.1", port))
+      sock.bind(("0.0.0.0", port))
     except OSError:
       continue
     print(port)
@@ -532,7 +532,7 @@ launch_galaxy() {
     setup_build_env
     export_workdir_pythonpath
     export SP_GALAXY_DIR="${galaxy_dir}"
-    export SP_GALAXY_HOST="127.0.0.1"
+    export SP_GALAXY_HOST="0.0.0.0"
     export SP_GALAXY_PORT="${port}"
     export SP_GALAXY_DEBUG="${SP_GALAXY_DEBUG:-1}"
     export SP_GALAXY_RELOAD="${SP_GALAXY_RELOAD:-0}"
