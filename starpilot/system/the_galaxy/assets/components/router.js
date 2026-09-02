@@ -2,8 +2,6 @@ import { html, reactive } from "/assets/vendor/arrow-core.js"
 import { createBrowserHistory, createRouter } from "/assets/vendor/remix-router-1.3.1.js"
 import { hideSidebar } from "/assets/js/utils.js"
 import { DeviceSettings } from "/assets/components/tools/device_settings.js?v=favorite-c4-hint-1"
-import { Bluetooth } from "/assets/components/tools/bluetooth.js?v=bluetooth-9"
-import { WheelControls } from "/assets/components/tools/wheel_controls.js?v=controllers-2"
 import { DoorControl } from "/assets/components/tools/doors.js"
 import { ErrorLogs } from "/assets/components/tools/error_logs.js"
 import { VehicleFeatures } from "/assets/components/tools/vehicle_features.js"
@@ -70,8 +68,6 @@ function SafeHome() {
 
 function Root() {
   let routes = [
-    createRoute("bluetooth", "/bluetooth", Bluetooth),
-    createRoute("wheel_controls", "/wheel-controls", WheelControls),
     createRoute("doors", "/manage_doors", DoorControl),
     createRoute("tsk", "/manage_tsk", TSKManager),
     createRoute("device_settings", "/device_settings/:section?", DeviceSettings),
