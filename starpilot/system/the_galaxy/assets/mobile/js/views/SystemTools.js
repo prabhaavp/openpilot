@@ -16,12 +16,16 @@ export const SystemTools = {
       currentBranch: "",
       branchLoading: true,
       fastStatus: null,
+      checkedForUpdates: false,
       busy: "",
     }
   },
   created() { this.poll = usePolling(() => this.loadFastStatus(), { interval: 3000 }); this.poll.start() },
   mounted() { this.loadBranches() },
   beforeUnmount() { this.poll?.destroy() },
+  computed: {
+    updateAvailable() { return !!this.fastStatus?.updateAvailable && !this.fastStatus?.running },
+  },
   methods: {
     shortCommit,
     async loadBranches() {
@@ -91,12 +95,58 @@ export const SystemTools = {
         showSnackbar(e?.message || "Switch failed.", "error")
       }
     },
+    async checkUpdates() {
+      if (this.busy) return
+      this.busy = "check"
+      try {
+        await this.loadFastStatus()
+        this.checkedForUpdates = true
+        const st = this.fastStatus
+        if (st?.running) showSnackbar("An update is already running.")
+        else if (st?.updateAvailable) showSnackbar(st?.message || "Update available.")
+        else showSnackbar(st?.message || "No update available — you're up to date.")
+      } catch (e) {
+        showSnackbar("Failed to check for updates.", "error")
+      } finally {
+        this.busy = ""
+      }
+    },
+    async applyFastUpdate() {
+      if (this.busy || this.isOnroad) return
+      if (this.fastStatus?.running) { showSnackbar("Fast update is already running."); return }
+      if (!this.checkedForUpdates || !this.updateAvailable) {
+        showSnackbar("No update available. Run \"Check for Updates\" first.", "error")
+        return
+      }
+      const st = this.fastStatus
+      const confirmed = await GalaxyConfirm({
+        title: "Update available",
+        message: `Fast update to the latest commit on ${st?.branch || "this branch"}.\n\nYour device will reboot when the update is done.`,
+        confirmLabel: "Update & Reboot",
+        danger: true,
+      })
+      if (!confirmed) return
+      await this.runUpdate("fast")
+    },
     async runUpdate(action) {
+      if (this.busy) return
       this.busy = action
       try {
+        if (action === "rollback") {
+          const st = this.fastStatus
+          if (st && !st.rollbackAvailable) {
+            showSnackbar("No previous installed version is available to roll back to.", "error")
+            return
+          }
+        }
+        if (action !== "fast") {
+          const actionLabels = { recover: "Recover the interrupted update?", rollback: "Roll back to the previous installed version?" }
+          if (!(await GalaxyConfirm({ title: actionLabels[action] || "Continue?", message: "Your device will reboot when the operation is done.", confirmLabel: "Continue", danger: true }))) return
+        }
         const fn = action === "fast" ? api.updateFast : action === "recover" ? api.updateRecover : api.updateRollback
         const payload = await fn()
         showSnackbar(payload?.message || "Update started.")
+        await this.loadFastStatus()
       } catch (e) {
         showSnackbar(e?.message || "Update failed.", "error")
       } finally {
@@ -184,10 +234,19 @@ export const SystemTools = {
               </select>
             </div>
             <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
-              <button type="button" class="gx-btn" :disabled="!!busy || isOnroad" @click="runUpdate('fast')">Check & Update</button>
+              <button type="button" class="gx-btn gx-btn--tonal" :disabled="!!busy || isOnroad || !!fastStatus?.running" @click="checkUpdates">
+                <i v-if="busy === 'check'" class="bi bi-arrow-repeat gx-spin"></i>
+                <i v-else class="bi bi-search"></i> {{ busy === 'check' ? 'Checking...' : 'Check for Updates' }}
+              </button>
+              <button type="button" class="gx-btn" :disabled="!updateAvailable || !!busy || isOnroad" @click="applyFastUpdate">
+                <i class="bi bi-arrow-up-circle"></i> {{ busy === 'fast' ? 'Updating...' : 'Update Now' }}
+              </button>
               <button type="button" class="gx-btn gx-btn--tonal" :disabled="!!busy || isOnroad" @click="runUpdate('recover')">Recover</button>
               <button type="button" class="gx-btn gx-btn--tonal" :disabled="!!busy || isOnroad" @click="runUpdate('rollback')">Rollback</button>
             </div>
+            <p v-if="checkedForUpdates && !updateAvailable && !fastStatus?.running" style="color:var(--text-muted); margin:8px 0 0;">
+              The device is up to date. Update becomes available only after a check finds a newer commit.
+            </p>
           </template>
         </div>
       </GalaxySection>

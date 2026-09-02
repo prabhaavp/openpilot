@@ -13,6 +13,7 @@ export const store = reactive({
   search: "",
   snackbar: null,
   online: false,
+  deviceStatus: "Parked",
   history: ["/"],
   theme: initialTheme(),
 })
@@ -57,12 +58,16 @@ function pushIfNew(route) {
   if (last !== route) store.history.push(route)
 }
 
-function applyRoute(route) {
+function applyRoute(route, { scrollToTop = false } = {}) {
   const { path, params } = parseHash(route)
+  const pathChanged = path !== store.route
   store.route = path
   store.params = params
   store.drawerOpen = false
-  window.scrollTo(0, 0)
+  // Only jump to the top for real view changes. In-place hash updates (a Manage
+  // panel opening under the same section, an embed switching src) must not yank
+  // the reader back to the top of the page.
+  if (scrollToTop || pathChanged) window.scrollTo(0, 0)
 }
 
 export function navigate(target) {
@@ -87,11 +92,11 @@ export function goBack() {
     store.history.pop()
   }
   const prev = store.history[store.history.length - 1] || "/"
-  applyRoute(prev)
+  applyRoute(prev, { scrollToTop: true })
   window.location.hash = prev
 }
 
-const NATIVE_ROOTS = new Set(["/", "/settings", "/tools", "/recordings", "/logs", "/tuning", "/navigation", "/vehicle", "/annotation", "/system", "/embed"])
+const NATIVE_ROOTS = new Set(["/", "/settings", "/tools", "/recordings", "/logs", "/tuning", "/navigation", "/vehicle", "/system", "/embed"])
 
 export function toolHref(link) {
   const path = link.split("?")[0]
@@ -103,11 +108,12 @@ export function initRouter() {
   const apply = () => {
     const route = currentPath()
     const { path, params } = parseHash(route)
+    const pathChanged = path !== store.route
     store.route = path
     store.params = params
     store.drawerOpen = false
     pushIfNew(route)
-    window.scrollTo(0, 0)
+    if (pathChanged) window.scrollTo(0, 0)
   }
   window.addEventListener("hashchange", apply)
   store.history = ["/"]

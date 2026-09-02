@@ -33,7 +33,6 @@ def test_ui_app_shell_files_exist():
     "js/components/ManeuverCard.js",
     "js/components/WheelControls.js",
     "js/components/BluetoothPanel.js",
-    "js/components/AnnotationCanvas.js",
     "js/components/DevModeBanner.js",
     "js/composables.js",
     "js/views/Home.js",
@@ -44,7 +43,6 @@ def test_ui_app_shell_files_exist():
     "js/views/Tuning.js",
     "js/views/Navigation.js",
     "js/views/Vehicle.js",
-    "js/views/AnnotationTool.js",
     "js/views/SystemTools.js",
   ]
   for rel in required:
@@ -110,7 +108,6 @@ def test_ui_ports_all_tool_views():
     "js/views/Tuning.js": ["/tuning?embedded=1", "gx-embed__frame"],
     "js/views/Navigation.js": ["getNavigation", "setNavigation"],
     "js/views/ToolEmbed.js": ["/manage_maps", "/manage_navigation_keys"],
-    "js/views/AnnotationTool.js": ["getVasmConfig", "getPipConfig", "vasmSnapshot"],
     "js/views/SystemTools.js": ["backupToggles", "restoreToggles", "getUpdateBranches", "factoryReset"],
     "js/components/WheelControls.js": ["getWheelControlsStatus"],
     "js/components/BluetoothPanel.js": ["getBluetoothStatus"],
@@ -130,17 +127,20 @@ def test_ui_routes_ported_views_natively_no_classic_fallback():
   tools = _read("js/views/Tools.js")
   home = _read("js/views/Home.js")
 
-  for view in ["Recordings", "Logs", "Tuning", "Navigation", "Vehicle", "AnnotationTool", "SystemTools"]:
+  for view in ["Recordings", "Logs", "Tuning", "Navigation", "Vehicle", "SystemTools"]:
     assert view in app, f"app.js should register {view}"
 
   # Ported routes must resolve natively in the Vue app (zero /classic redirect).
-  for route in ["/recordings", "/logs", "/tuning", "/navigation", "/vehicle", "/annotation", "/system"]:
+  for route in ["/recordings", "/logs", "/tuning", "/navigation", "/vehicle", "/system"]:
     assert route in shell, f"AppShell should route {route} natively"
     assert route in app, f"app.js should resolve {route} natively"
   # Tools grid routes the native categories (Recordings lives in the bottom nav
   # and is intentionally absent from the Tools page).
-  for tool in ["/tuning", "/logs", "/navigation", "/vehicle", "/annotation", "/system"]:
+  for tool in ["/tuning", "/logs", "/navigation", "/vehicle", "/system"]:
     assert tool in tools, f"Tools grid should route {tool} natively"
+  # V-ASM Spot Monitor and PiP Side Camera use the classic page-in-page embeds
+  # instead of the removed native Annotation Tool.
+  assert "/manage_v_asm" in tools and "/manage_pip_sidecam" in tools
   # Home is a page-in-page embed of the classic dashboard (no quick tiles).
   assert "/classic?embedded=1" in home and "gx-embed__frame" in home
 
@@ -183,7 +183,7 @@ def test_ui_numeric_toggles_are_sliders_with_default():
 def test_ui_centralizes_api_and_uses_composables():
   api = _read("js/api.js")
   composables = _read("js/composables.js")
-  for view in ["Recordings", "Logs", "Tuning", "Navigation", "Vehicle", "AnnotationTool", "SystemTools"]:
+  for view in ["Recordings", "Logs", "Tuning", "Navigation", "Vehicle", "SystemTools"]:
     src = _read(f"js/views/{view}.js")
     # Views must not issue raw fetch() / hand-rolled polling / SSE.
     assert "fetch(" not in src.replace("api.", ""), f"{view} should not use raw fetch()"

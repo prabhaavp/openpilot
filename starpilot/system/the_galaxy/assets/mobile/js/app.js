@@ -8,7 +8,6 @@ import { Logs } from "./views/Logs.js"
 import { Tuning } from "./views/Tuning.js"
 import { Navigation } from "./views/Navigation.js"
 import { Vehicle } from "./views/Vehicle.js"
-import { AnnotationTool } from "./views/AnnotationTool.js"
 import { SystemTools } from "./views/SystemTools.js"
 import { ToolEmbed } from "./views/ToolEmbed.js"
 import { store, initRouter, navigate } from "./store.js"
@@ -34,7 +33,6 @@ const VIEWS = {
   "/tuning": Tuning,
   "/navigation": Navigation,
   "/vehicle": Vehicle,
-  "/annotation": AnnotationTool,
   "/system": SystemTools,
   "/embed": ToolEmbed,
 }

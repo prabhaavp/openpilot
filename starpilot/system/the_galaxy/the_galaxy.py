@@ -4695,6 +4695,8 @@ def setup(app):
 
   @app.route("/mobile", methods=["GET"])
   @app.route("/mobile/", methods=["GET"])
+  @app.route("/ui", methods=["GET"])
+  @app.route("/ui/", methods=["GET"])
   def mobile_index():
     return _serve_new_ui()
 
@@ -6832,6 +6834,15 @@ def setup(app):
     # storage scan cannot be multiplied by repeated homepage polling.
     with _STATS_RESPONSE_LOCK:
       return _get_stats_locked()
+
+  @app.route("/api/device/status", methods=["GET"])
+  def device_status():
+    return jsonify({
+      "status": "Driving" if params.get_bool("IsOnroad") else "Parked",
+      "online": True,
+      "lanIp": utilities.get_current_lan_ip(),
+      "networkName": utilities.get_current_network_name(),
+    }), 200
 
   @app.route("/api/stats/ignore_drive", methods=["POST"])
   def ignore_drive_stats():

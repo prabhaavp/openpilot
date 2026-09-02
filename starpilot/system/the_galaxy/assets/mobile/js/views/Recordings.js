@@ -42,9 +42,9 @@ export const Recordings = {
       searchQuery: "",
       sortOrder: "newest",
       showPreservedOnly: false,
-      viewMode: "list",
-      controller: null,
       playerRoute: null,
+      playerLoading: false,
+      playerError: "",
       segments: [],
       current: 0,
       cameras: [],
@@ -148,20 +148,24 @@ export const Recordings = {
       }
     },
     async openPlayer(route) {
+      this.playerRoute = route
+      this.playerLoading = true
+      this.playerError = ""
       try {
         const data = await api.getRoute(route.name)
         const segments = Array.isArray(data.segment_urls) ? data.segment_urls.filter((u) => typeof u === "string") : []
         const cameras = ["forward", "wide", "driver"].filter((c) => data.available_cameras?.includes(c))
         if (!segments.length) throw new Error("No video segments for this route.")
         if (!cameras.length) throw new Error("No camera video for this route.")
-        this.playerRoute = route
         this.segments = segments
         this.current = 0
         this.cameras = cameras
         this.selectedCamera = cameras.includes("forward") ? "forward" : cameras[0]
         this.$nextTick(() => this.playSegment())
       } catch (e) {
-        showSnackbar(e?.message || "Could not load route.", "error")
+        this.playerError = e?.message || "Could not load route."
+      } finally {
+        this.playerLoading = false
       }
     },
     cameraUrl(url, low) {
@@ -186,6 +190,10 @@ export const Recordings = {
     closePlayer() {
       if (this.$refs.player) { this.$refs.player.pause(); this.$refs.player.removeAttribute("src") }
       this.playerRoute = null
+      this.playerLoading = false
+      this.playerError = ""
+      this.segments = []
+      this.cameras = []
     },
     async openLogs(route) {
       try {
@@ -250,10 +258,6 @@ export const Recordings = {
         </div>
       </section>
 
-      <GalaxyModal :model-value="!!logsRoute" :title="'Full logs · ' + (logsRoute?.displayName || '')" confirm-label="Close" cancel-label="Close"
-        @update:model-value="logsRoute = null">
-      </GalaxyModal>
-
       <div v-if="logsRoute && logsData" class="gx-card" style="margin-top:12px;">
         <div class="gx-section__header">
           <i class="bi bi-file-earmark-arrow-down"></i>
@@ -271,21 +275,27 @@ export const Recordings = {
 
       <transition name="gx-fade">
         <div v-if="playerRoute" class="gx-scrim" @click.self="closePlayer">
-          <div class="gx-sheet" style="max-width:640px; width:100%;">
-            <div class="gx-section__header">
+          <div class="gx-sheet" style="max-width:640px; width:100%;" role="dialog" aria-label="Route video player">
+            <div class="gx-section__header" style="cursor:default;">
               <i class="bi bi-camera-video"></i>
               <span class="gx-section__title">{{ playerRoute.displayName }}</span>
-              <button type="button" class="gx-icon-btn" @click="closePlayer"><i class="bi bi-x-lg"></i></button>
+              <button type="button" class="gx-icon-btn" aria-label="Close player" @click="closePlayer"><i class="bi bi-x-lg"></i></button>
             </div>
-            <video ref="player" class="gx-video" controls muted playsinline preload="metadata" style="width:100%; background:#000;"></video>
-            <div style="display:flex; gap:8px; padding: var(--sp-3); flex-wrap:wrap; align-items:center;">
-              <button type="button" class="gx-btn gx-btn--tonal" :disabled="current<=0" @click="current--; playSegment()"><i class="bi bi-skip-start-fill"></i></button>
-              <select class="gx-field" :value="current" @change="current = Number($event.target.value); playSegment()">
-                <option v-for="(s,i) in segments" :key="i" :value="i">Segment {{ i + 1 }}</option>
-              </select>
-              <button type="button" class="gx-btn gx-btn--tonal" :disabled="current>=segments.length-1" @click="current++; playSegment()"><i class="bi bi-skip-end-fill"></i></button>
-              <button v-for="c in cameras" :key="c" type="button" class="gx-chip" :style="selectedCamera===c?'background:var(--primary);color:var(--on-primary);':''" @click="selectedCamera=c; playSegment()">{{ c }}</button>
-              <button type="button" class="gx-btn" @click="downloadRoute"><i class="bi bi-download"></i> Download</button>
+            <div style="padding: var(--sp-3);">
+              <div v-if="playerError" class="gx-empty" style="color: var(--error);">{{ playerError }}</div>
+              <div v-else-if="playerLoading" class="gx-loading"><i class="bi bi-hourglass-split"></i> Loading video...</div>
+              <template v-else-if="segments.length">
+                <video ref="player" class="gx-video" controls muted playsinline preload="metadata"></video>
+                <div style="display:flex; gap:8px; padding: var(--sp-3) 0 0; flex-wrap:wrap; align-items:center;">
+                  <button type="button" class="gx-btn gx-btn--tonal" :disabled="current<=0" @click="current--; playSegment()"><i class="bi bi-skip-start-fill"></i></button>
+                  <select class="gx-field" :value="current" @change="current = Number($event.target.value); playSegment()">
+                    <option v-for="(s,i) in segments" :key="i" :value="i">Segment {{ i + 1 }}</option>
+                  </select>
+                  <button type="button" class="gx-btn gx-btn--tonal" :disabled="current>=segments.length-1" @click="current++; playSegment()"><i class="bi bi-skip-end-fill"></i></button>
+                  <button v-for="c in cameras" :key="c" type="button" class="gx-chip" :style="selectedCamera===c?'background:var(--primary);color:var(--on-primary);':''" @click="selectedCamera=c; playSegment()">{{ c }}</button>
+                  <button type="button" class="gx-btn" @click="downloadRoute"><i class="bi bi-download"></i> Download</button>
+                </div>
+              </template>
             </div>
           </div>
         </div>

@@ -1,4 +1,6 @@
 import { store, navigate, goBack, toolHref, toggleTheme } from "../store.js"
+import { api } from "../api.js"
+import { usePolling } from "../composables.js"
 
 const NAV = {
   recordings: [
@@ -9,7 +11,8 @@ const NAV = {
     { name: "Tuning & Maneuvers", link: "/tuning", icon: "bi-sign-turn-right" },
     { name: "Navigation & Maps", link: "/navigation", icon: "bi-map" },
     { name: "Vehicle Controls", link: "/vehicle", icon: "bi-car-front" },
-    { name: "Annotation Tool", link: "/annotation", icon: "bi-eye" },
+    { name: "V-ASM Spot Monitor", link: "/manage_v_asm", icon: "bi-bounding-box" },
+    { name: "PiP Side Camera", link: "/manage_pip_sidecam", icon: "bi-camera-video" },
     { name: "System Tools", link: "/system", icon: "bi-arrow-repeat" },
     { name: "Galaxy", link: "/galaxy", icon: "bi-globe2" },
     { name: "Sentry Mode", link: "/sentry", icon: "bi-shield-exclamation" },
@@ -34,6 +37,7 @@ export const AppShell = {
   },
   computed: {
     online() { return store.online },
+    statusLabel() { return store.online ? store.deviceStatus : "Offline" },
     isLight() { return store.theme === "light" },
     drawerOpen: {
       get() { return store.drawerOpen },
@@ -55,6 +59,16 @@ export const AppShell = {
   methods: {
     closeDrawer() { store.drawerOpen = false },
     back() { goBack() },
+    async refreshStatus() {
+      try {
+        const payload = await api.getDeviceStatus()
+        if (!payload) throw new Error("no status")
+        store.online = true
+        store.deviceStatus = String(payload.status || "Parked")
+      } catch (e) {
+        store.online = false
+      }
+    },
     clearSearch() {
       store.search = ""
       this.$nextTick(() => { const el = this.$refs.searchInput; if (el) el.focus() })
@@ -70,6 +84,13 @@ export const AppShell = {
     isActive(link) {
       return this.activePath === link || (link !== "/" && this.activePath.startsWith(link))
     },
+  },
+  created() {
+    this.statusPoll = usePolling(() => this.refreshStatus(), { interval: 5000 })
+    this.statusPoll.start()
+  },
+  beforeUnmount() {
+    this.statusPoll?.destroy()
   },
   template: `
     <div class="gx-app">
@@ -92,7 +113,7 @@ export const AppShell = {
           <div class="gx-appbar__right">
             <span class="gx-status-pill">
               <span class="gx-status-dot" :class="online ? 'online' : 'offline'"></span>
-              {{ online ? "Online" : "Offline" }}
+              {{ statusLabel }}
             </span>
           </div>
         </div>

@@ -275,8 +275,9 @@ export const api = {
     return handle(res)
   },
 
-  async carFeaturesCheck() {
-    const res = await fetch("/api/car_features_check")
+  async carFeaturesCheck(tool = "") {
+    const query = tool ? `?tool=${encodeURIComponent(tool)}` : ""
+    const res = await fetch(`/api/car_features_check${query}`)
     return res.ok ? handle(res) : null
   },
 
