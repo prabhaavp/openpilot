@@ -219,8 +219,8 @@ export const SystemTools = {
                 <div class="gx-row" style="border-top:none; min-height:0; padding:4px 0;"><span class="gx-row__label">Local</span><span class="gx-row__value" style="font-family:monospace;">{{ shortCommit(fastStatus.localCommit) }}</span></div>
                 <div class="gx-row" style="border-top:none; min-height:0; padding:4px 0;"><span class="gx-row__label">Remote</span><span class="gx-row__value" style="font-family:monospace;">{{ shortCommit(fastStatus.remoteCommit) }}</span></div>
                 <div v-if="fastStatus.message" class="gx-row__desc">{{ fastStatus.message }}</div>
-                <div v-if="fastStatus.warning" class="gx-row__desc" style="color:var(--warning);">{{ fastStatus.warning }}</div>
-                <div v-if="fastStatus.agnosUpdate?.warnings?.length" style="margin-top:4px;">
+                <div v-if="fastStatus.warning && (fastStatus.running || fastStatus.updateAvailable)" class="gx-row__desc" style="color:var(--warning);">{{ fastStatus.warning }}</div>
+                <div v-if="fastStatus.agnosUpdate?.available && fastStatus.agnosUpdate?.warnings?.length" style="margin-top:4px;">
                   <div v-for="w in fastStatus.agnosUpdate.warnings" :key="w" class="gx-row__desc" style="color:var(--warning);">⚠ {{ w }}</div>
                 </div>
               </div>
