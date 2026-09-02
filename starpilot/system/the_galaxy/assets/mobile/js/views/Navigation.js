@@ -1,10 +1,11 @@
 import { api, showSnackbar } from "../api.js"
 import { GalaxySection } from "../components/GalaxySection.js"
+import { GalaxyEmbed } from "../components/GalaxyEmbed.js"
 import { useTabRouting } from "../composables.js"
 
 export const Navigation = {
   name: "Navigation",
-  components: { GalaxySection },
+  components: { GalaxySection, GalaxyEmbed },
   data() {
     return { destination: "", favorites: [], navLoading: true }
   },
@@ -12,6 +13,24 @@ export const Navigation = {
     return useTabRouting("/navigation", {
       nav: "", maps: "maps", keys: "keys", speeds: "speeds",
     })
+  },
+  computed: {
+    embedSrc() {
+      const sources = {
+        maps: "/manage_maps",
+        keys: "/manage_navigation_keys",
+        speeds: "/download_speed_limits",
+      }
+      return sources[this.tab] || ""
+    },
+    embedTitle() {
+      const titles = {
+        maps: "Maps",
+        keys: "App Keys",
+        speeds: "Speed Limits",
+      }
+      return titles[this.tab] || "Navigation"
+    },
   },
   mounted() { this.loadNavigation() },
   methods: {
@@ -64,10 +83,7 @@ export const Navigation = {
         </GalaxySection>
       </template>
 
-      <div v-else class="gx-embed">
-        <iframe v-if="tab === 'speeds'" src="/download_speed_limits" class="gx-embed__frame" frameborder="0"></iframe>
-        <iframe v-else :src="tab === 'maps' ? '/manage_maps' : '/manage_navigation_keys'" class="gx-embed__frame" frameborder="0"></iframe>
-      </div>
+      <GalaxyEmbed v-else-if="embedSrc" :src="embedSrc" :title="embedTitle" />
     </div>
   `,
 }

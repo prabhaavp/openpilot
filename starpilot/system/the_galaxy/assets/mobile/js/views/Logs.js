@@ -1,6 +1,7 @@
 import { api, showSnackbar } from "../api.js"
 import { useLogStream } from "../composables.js"
 import { GalaxyConfirm } from "../components/GalaxyModal.js"
+import { GalaxyEmbed } from "../components/GalaxyEmbed.js"
 
 function parseLogDate(filename) {
   const m = filename.match(/(\d{4})-(\d{2})-(\d{2})[T_]?(\d{2})-?(\d{2})-?(\d{2})?/)
@@ -11,6 +12,7 @@ function parseLogDate(filename) {
 
 export const Logs = {
   name: "Logs",
+  components: { GalaxyEmbed },
   data() {
     return {
       tab: "errors",
@@ -237,9 +239,7 @@ export const Logs = {
       </template>
 
       <template v-else>
-        <div class="gx-embed">
-          <iframe src="/troubleshoot" class="gx-embed__frame" frameborder="0" title="Troubleshoot"></iframe>
-        </div>
+        <GalaxyEmbed src="/troubleshoot" title="Troubleshoot" />
       </template>
     </div>
   `,

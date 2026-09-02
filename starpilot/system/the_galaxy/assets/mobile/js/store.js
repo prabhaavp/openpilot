@@ -106,7 +106,7 @@ export function toolHref(link) {
 
 export function initRouter() {
   const apply = () => {
-    const route = currentPath()
+    const route = (window.location.hash || "").replace(/^#/, "") || "/"
     const { path, params } = parseHash(route)
     const pathChanged = path !== store.route
     store.route = path

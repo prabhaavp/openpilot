@@ -27,6 +27,7 @@ def test_ui_app_shell_files_exist():
     "js/components/AppShell.js",
     "js/components/GalaxyModal.js",
     "js/components/GalaxySection.js",
+    "js/components/GalaxyEmbed.js",
     "js/components/GalaxyToggleCard.js",
     "js/components/SettingTree.js",
     "js/components/ParamSections.js",
@@ -105,7 +106,7 @@ def test_ui_ports_all_tool_views():
   checks = {
         "js/views/Recordings.js": ["/api/routes", "getRoutesStream", "getRouteLogs"],
     "js/views/Logs.js": ["getErrorLogs", "tmuxSnapshot", "runTroubleshoot"],
-    "js/views/Tuning.js": ["/tuning?embedded=1", "gx-embed__frame"],
+    "js/views/Tuning.js": ["GalaxyEmbed", 'src="/tuning"'],
     "js/views/Navigation.js": ["getNavigation", "setNavigation"],
     "js/views/ToolEmbed.js": ["/manage_maps", "/manage_navigation_keys"],
     "js/views/SystemTools.js": ["backupToggles", "restoreToggles", "getUpdateBranches", "factoryReset"],
@@ -141,26 +142,28 @@ def test_ui_routes_ported_views_natively_no_classic_fallback():
   # V-ASM Spot Monitor and PiP Side Camera use the classic page-in-page embeds
   # instead of the removed native Annotation Tool.
   assert "/manage_v_asm" in tools and "/manage_pip_sidecam" in tools
-  # Home is a page-in-page embed of the classic dashboard (no quick tiles).
-  assert "/classic?embedded=1" in home and "gx-embed__frame" in home
-
   # Unmigrated tools are embedded (ToolEmbed), never a full-page redirect.
   assert "return ToolEmbed" in app
   assert "ToolEmbed" in app
+  # Home renders the classic dashboard as a shared page-in-page embed.
+  assert 'src="/classic"' in home and "GalaxyEmbed" in home
   # Neither the shell, tools grid, nor home tiles ever redirect out of the UI.
   for src in [shell, tools, home, _read("js/views/ToolEmbed.js"), _read("js/store.js")]:
     assert "window.location.href" not in src
 
 
 def test_ui_embeds_unmigrated_tools_inapp():
-  embed = _read("js/views/ToolEmbed.js")
-  assert "iframe" in embed and "gx-embed__frame" in embed
+  # All page-in-page embeds go through the single shared GalaxyEmbed component.
+  embed_comp = _read("js/components/GalaxyEmbed.js")
+  assert "iframe" in embed_comp and "gx-embed__frame" in embed_comp
+  tool = _read("js/views/ToolEmbed.js")
+  assert "GalaxyEmbed" in tool and "forward-nav" in tool
   store = _read("js/store.js")
   assert "toolHref" in store and "/embed?src=" in store
   shell = _read("js/components/AppShell.js")
   assert "toolHref" in shell
   # Embed mode tags the iframe src so the classic SPA hides its sidebar/menu.
-  assert "embedded=1" in embed
+  assert "embedded=1" in embed_comp
   classic_index = (REPO_ROOT / "starpilot/system/the_galaxy/templates/index.html").read_text(encoding="utf-8")
   assert 'has("embedded")' in classic_index and 'classList.add("embedded")' in classic_index
   assert "window.self !== window.top" in classic_index
@@ -201,7 +204,9 @@ def test_ui_schema_driven_param_engine_reused():
   # own tuning UI). Vehicle is a hub of Controllers/Bluetooth/Features — all
   # toggles live in the dedicated Settings view, so it must NOT render toggles.
   tuning = _read("js/views/Tuning.js")
-  assert "/tuning?embedded=1" in tuning, "Tuning should embed the classic tuning SPA"
+  embed_comp = _read("js/components/GalaxyEmbed.js")
+  assert 'src="/tuning"' in tuning and "GalaxyEmbed" in tuning, "Tuning should embed the classic tuning SPA"
+  assert "embedded=1" in embed_comp
   vehicle = _read("js/views/Vehicle.js")
   assert "ParamSections" not in vehicle, "Vehicle must not render redundant toggles"
   assert "WheelControls" in vehicle and "BluetoothPanel" in vehicle

@@ -2,6 +2,7 @@ import { api, showSnackbar } from "../api.js"
 import { usePolling } from "../composables.js"
 import { GalaxyConfirm } from "../components/GalaxyModal.js"
 import { GalaxySection } from "../components/GalaxySection.js"
+import { GalaxyEmbed } from "../components/GalaxyEmbed.js"
 
 function shortCommit(commit) {
   return String(commit || "").slice(0, 10) || "—"
@@ -9,7 +10,7 @@ function shortCommit(commit) {
 
 export const SystemTools = {
   name: "SystemTools",
-  components: { GalaxySection },
+  components: { GalaxySection, GalaxyEmbed },
   data() {
     return {
       branches: [],
@@ -194,9 +195,7 @@ export const SystemTools = {
           <button type="button" class="gx-btn" style="background:var(--error);color:var(--on-error);" @click="deleteAllDrivingRoutes">Delete All Driving Routes</button>
           <input ref="restoreInput" type="file" accept=".json" style="display:none;" @change="onRestoreFile" />
         </div>
-        <div class="gx-embed" style="min-height:60vh; margin: var(--sp-3);">
-          <iframe src="/manage_toggles?embedded=1" class="gx-embed__frame" frameborder="0" title="Backup & Restore"></iframe>
-        </div>
+        <GalaxyEmbed src="/manage_toggles" title="Backup & Restore" style="min-height:60vh; margin: var(--sp-3);" />
       </GalaxySection>
 
       <GalaxySection title="Software & Updates" icon="bi-arrow-up-circle">
