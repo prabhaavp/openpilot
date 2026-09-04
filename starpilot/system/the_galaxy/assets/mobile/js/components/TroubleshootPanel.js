@@ -1,5 +1,6 @@
 import { api, showSnackbar } from "../api.js"
 import { GalaxyConfirm } from "./GalaxyModal.js"
+import { GxNotice } from "./GxNotice.js"
 
 function formatValue(value) {
   if (typeof value === "boolean") return value ? "On" : "Off"
@@ -30,6 +31,7 @@ function valuesMatch(left, right) {
 
 export const TroubleshootPanel = {
   name: "TroubleshootPanel",
+  components: { GxNotice },
   data() {
     return {
       loading: true,
@@ -165,7 +167,7 @@ export const TroubleshootPanel = {
               <span class="gx-switch__thumb"></span>
             </label>
           </div>
-          <div v-if="error" class="gx-row__desc" style="color:var(--error);"><strong>Error:</strong> {{ error }}</div>
+          <GxNotice v-if="error" tone="danger" :text="error" style="margin:var(--sp-2) 0 0;" />
           <div class="gx-row__desc"><strong>Onroad:</strong> {{ isOnroad ? 'Yes' : 'No' }}</div>
           <div class="gx-row__desc"><strong>Changed Settings:</strong> {{ countNonDefault }}</div>
         </div>

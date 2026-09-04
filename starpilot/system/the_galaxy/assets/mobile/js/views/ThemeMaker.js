@@ -1,6 +1,7 @@
 import { api, showSnackbar } from "../api.js"
 import { GalaxyConfirm } from "../components/GalaxyModal.js"
 import { GalaxySection } from "../components/GalaxySection.js"
+import { GxNotice } from "../components/GxNotice.js"
 
 const COLOR_LABELS = {
   LaneLines: "Lane Lines",
@@ -69,7 +70,7 @@ function emptyNames() {
 
 export const ThemeMaker = {
   name: "ThemeMaker",
-  components: { GalaxySection },
+  components: { GalaxySection, GxNotice },
   data() {
     return {
       colors: defaultColors(),
@@ -569,7 +570,7 @@ export const ThemeMaker = {
       <GalaxySection title="Theme Library" icon="bi-collection">
         <div style="padding: var(--sp-3);">
           <div v-if="loading" class="gx-loading">Loading themes...</div>
-          <div v-else-if="loadedError" class="gx-alert" style="color:var(--error);">{{ loadedError }}</div>
+          <GxNotice v-else-if="loadedError" tone="danger" :text="loadedError" />
           <div v-else-if="!themes.length" class="gx-empty">No themes yet. Build one above and hit Save Theme.</div>
           <template v-else>
             <div class="gx-card-grid">

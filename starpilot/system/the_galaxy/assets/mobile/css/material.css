@@ -1077,6 +1077,7 @@ input[type="color"].gx-color {
 }
 
 .gx-alert--danger .gx-alert__icon { color: var(--error); }
+.gx-alert--danger .gx-alert__body span { color: var(--error); }
 
 .gx-alert__icon { font-size: 1.4rem; color: var(--primary); }
 .gx-alert__body { flex: 1 1 220px; }

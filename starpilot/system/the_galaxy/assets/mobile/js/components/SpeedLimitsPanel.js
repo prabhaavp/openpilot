@@ -1,8 +1,10 @@
 import { api, showSnackbar } from "../api.js"
 import { usePolling } from "../composables.js"
+import { GxNotice } from "./GxNotice.js"
 
 export const SpeedLimitsPanel = {
   name: "SpeedLimitsPanel",
+  components: { GxNotice },
   data() {
     return {
       loading: true,
@@ -105,7 +107,7 @@ export const SpeedLimitsPanel = {
           <span class="gx-row__value">{{ vision.debugSession || 'No active session' }}<template v-if="vision.bookmarkCount">, {{ vision.bookmarkCount }} bookmark{{ vision.bookmarkCount === 1 ? '' : 's' }}</template></span>
         </div>
         <div v-if="!loading && vision.enabled && vision.lastEvent" class="gx-row__desc">{{ vision.lastEvent }}</div>
-        <div v-if="!loading && reason && reason !== status" class="gx-row__desc" style="color:var(--warning);">{{ reason }}</div>
+        <GxNotice v-if="!loading && reason && reason !== status" :text="reason" style="margin:0;" />
         <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center;">
           <a class="gx-btn" :href="'/api/speed_limits'" download="speed_limits.json" @click="showSnackbar('Download started...')"><i class="bi bi-download"></i> Download</a>
           <button type="button" class="gx-btn gx-btn--tonal" :disabled="submitting || processing || !canProcessNow" @click="processNow">

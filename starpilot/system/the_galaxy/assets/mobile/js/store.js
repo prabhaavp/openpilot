@@ -58,26 +58,21 @@ function pushIfNew(route) {
   if (last !== route) store.history.push(route)
 }
 
+// Commit a route into the store. Only jumps to the top for real view changes —
+// in-place hash updates (a Manage panel opening under the same section, an
+// embed switching src) must not yank the reader back to the top of the page.
 function applyRoute(route, { scrollToTop = false } = {}) {
   const { path, params } = parseHash(route)
   const pathChanged = path !== store.route
   store.route = path
   store.params = params
   store.drawerOpen = false
-  // Only jump to the top for real view changes. In-place hash updates (a Manage
-  // panel opening under the same section, an embed switching src) must not yank
-  // the reader back to the top of the page.
   if (scrollToTop || pathChanged) window.scrollTo(0, 0)
 }
 
 export function navigate(target) {
   const { path } = parseHash(target)
-  if (path === currentPath()) {
-    applyRoute(target)
-    window.location.hash = toHash(target)
-    return
-  }
-  pushIfNew(path)
+  if (path !== currentPath()) pushIfNew(path)
   applyRoute(target)
   window.location.hash = toHash(target)
 }
@@ -107,13 +102,8 @@ export function toolHref(link) {
 export function initRouter() {
   const apply = () => {
     const route = (window.location.hash || "").replace(/^#/, "") || "/"
-    const { path, params } = parseHash(route)
-    const pathChanged = path !== store.route
-    store.route = path
-    store.params = params
-    store.drawerOpen = false
+    applyRoute(route)
     pushIfNew(route)
-    if (pathChanged) window.scrollTo(0, 0)
   }
   window.addEventListener("hashchange", apply)
   store.history = ["/"]

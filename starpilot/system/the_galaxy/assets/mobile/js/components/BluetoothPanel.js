@@ -1,10 +1,12 @@
 import { api, showSnackbar } from "../api.js"
 import { usePolling } from "../composables.js"
+import { GxNotice } from "./GxNotice.js"
 
 function address(device) { return String(device.address || "").toUpperCase() }
 
 export const BluetoothPanel = {
   name: "BluetoothPanel",
+  components: { GxNotice },
   data() {
     return {
       loading: true, busy: "", available: false, enabled: false, powered: false, discovering: false,
@@ -84,8 +86,8 @@ export const BluetoothPanel = {
           <span>Bluetooth {{ enabled ? 'On' : 'Off' }}</span>
           <button type="button" class="gx-btn gx-btn--tonal" :disabled="!available || offroadDisabled()" @click="request('power', { enabled: !enabled })">{{ enabled ? 'Turn Off' : 'Turn On' }}</button>
         </div>
-        <p v-if="!offroad" style="color:var(--text-muted);">Scanning, pairing, and forgetting devices are available offroad only.</p>
-        <p v-if="error" style="color:var(--error);">{{ error }}</p>
+        <GxNotice v-if="!offroad" text="Scanning, pairing, and forgetting devices are available offroad only." style="margin:0 0 var(--sp-2);" />
+        <GxNotice v-if="error" tone="danger" :text="error" style="margin:0 0 var(--sp-2);" />
 
         <div v-if="prompt" class="gx-card" style="margin:12px 0; background:var(--surface-variant);">
           <div class="gx-section__header"><i class="bi bi-shield-check"></i><span class="gx-section__title">Pairing request · {{ prompt.name }}</span></div>

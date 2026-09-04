@@ -458,14 +458,10 @@ export const LateralTuningPanel = {
           <p style="color: var(--text-muted); line-height:1.6; margin:0 0 var(--sp-3);">
             Analyze one or more local routes, review deterministic lateral findings, apply a bounded trial, drive, then revert or refine.
           </p>
-          <div v-if="laneCentering" style="color:var(--error); margin:0 0 var(--sp-3); line-height:1.5;">
-            <strong>Before using FLM:</strong> turn Lane Centering off. FLM must analyze the model's unmodified lateral request; routes recorded with Lane Centering enabled are excluded.
-          </div>
+          <GxNotice v-if="laneCentering" title="Before using FLM:" text="Turn Lane Centering off. FLM must analyze the model's unmodified lateral request; routes recorded with Lane Centering enabled are excluded." style="margin:0 0 var(--sp-3);" />
           <GxNotice v-if="isOnroad" text="FLM analysis is offroad-only. Stop the car and go offroad before starting a run." style="margin:0 0 var(--sp-3);" />
-          <div v-if="activeTrial && activeTrial.rollbackAvailable === false" style="color:var(--error); margin:0 0 var(--sp-3); line-height:1.5;">
-            The original rollback data is unavailable. Keep the current tune as the new baseline before applying another trial.
-          </div>
-          <p v-if="error" style="color:var(--error); margin:0 0 var(--sp-3); line-height:1.5;">{{ error }}</p>
+          <GxNotice v-if="activeTrial && activeTrial.rollbackAvailable === false" text="The original rollback data is unavailable. Keep the current tune as the new baseline before applying another trial." style="margin:0 0 var(--sp-3);" />
+          <GxNotice v-if="error" tone="danger" :text="error" style="margin:0 0 var(--sp-3);" />
 
           <div style="display:flex; gap:8px; margin-bottom: var(--sp-3); flex-wrap:wrap;">
             <button type="button" class="gx-btn" :disabled="busy || !canAnalyze" @click="analyze">

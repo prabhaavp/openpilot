@@ -337,8 +337,8 @@ export const MapsPanel = {
             <span class="gx-row__value">{{ storageLabel }}</span>
           </div>
           <GxNotice v-if="status.isOnroad" text="Map downloads and removal are blocked while driving." style="margin:8px 0;" />
-          <div v-if="selectionDirty" class="gx-row__desc" style="color:var(--warning);">You have unsaved region changes. Downloading now will use the current selection.</div>
-          <div v-if="scheduleDirty" class="gx-row__desc" style="color:var(--warning);">You have an unsaved schedule change. Downloading now will also apply it.</div>
+          <GxNotice v-if="selectionDirty" text="You have unsaved region changes. Downloading now will use the current selection." style="margin:8px 0;" />
+          <GxNotice v-if="scheduleDirty" text="You have an unsaved schedule change. Downloading now will also apply it." style="margin:8px 0;" />
           <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center;">
             <button type="button" class="gx-btn" :disabled="!canDownload && !canCancel" @click="status.downloading ? cancelDownload() : startDownload()">
               <i class="bi" :class="status.downloading ? 'bi-x-circle' : 'bi-download'"></i>
@@ -452,7 +452,7 @@ export const MapsPanel = {
         </div>
       </section>
 
-      <div v-if="error" class="gx-alert" style="color:var(--error);">{{ error }}</div>
+      <GxNotice v-if="error" tone="danger" :text="error" />
     </div>
   `,
 }

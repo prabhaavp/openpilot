@@ -1,10 +1,12 @@
 import { api } from "../api.js"
 import { usePolling } from "../composables.js"
+import { GxNotice } from "./GxNotice.js"
 
 const FAVORITE_SLOT_COUNT = 3
 
 export const WheelControls = {
   name: "WheelControls",
+  components: { GxNotice },
   data() {
     return {
       loading: true, busy: "", available: false, offroad: false, learning: false,
@@ -90,8 +92,8 @@ export const WheelControls = {
   template: `
     <div>
       <div style="padding: var(--sp-3);">
-        <p v-if="!offroad" style="color: var(--text-muted);">Mappings can only be changed while offroad. Mapped buttons continue working onroad.</p>
-        <p v-if="error" style="color: var(--error);">{{ error }}</p>
+        <GxNotice v-if="!offroad" text="Mappings can only be changed while offroad. Mapped buttons continue working onroad." style="margin:0 0 var(--sp-2);" />
+        <GxNotice v-if="error" tone="danger" :text="error" style="margin:0 0 var(--sp-2);" />
         <p v-if="!loading && !available && !mappings.length" style="color: var(--text-muted);">The wheel control service is starting.</p>
         <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
           <button type="button" class="gx-btn" :disabled="disabled() || !mappings.length" @click="request(testing ? 'test-stop' : 'test')">{{ testing ? 'Stop Testing' : 'Test Buttons' }}</button>

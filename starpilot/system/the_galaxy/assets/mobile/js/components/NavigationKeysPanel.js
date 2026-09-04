@@ -1,5 +1,6 @@
 import { api, showSnackbar } from "../api.js"
 import { GalaxyConfirm } from "./GalaxyModal.js"
+import { GxNotice } from "./GxNotice.js"
 
 const DEFAULT_PLAY_STORE_URL = "https://play.google.com/store/apps/details?id=com.embaucha.galaxynav&hl=en-US&ah=9FldHJ99kxL8oNbSlO5F4sQqwC4"
 
@@ -27,6 +28,7 @@ function prefixed(raw, prefix) {
 
 export const NavigationKeysPanel = {
   name: "NavigationKeysPanel",
+  components: { GxNotice },
   data() {
     return {
       loading: true,
@@ -164,7 +166,7 @@ export const NavigationKeysPanel = {
     <div style="display:grid; gap:12px;">
       <div v-if="loading" class="gx-loading">Loading keys...</div>
       <template v-else>
-        <section v-if="error" class="gx-alert" style="color:var(--error);">{{ error }}</section>
+        <GxNotice v-if="error" tone="danger" :text="error" />
 
         <section class="gx-card">
           <div class="gx-section__header">
