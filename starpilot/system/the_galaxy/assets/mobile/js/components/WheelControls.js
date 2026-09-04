@@ -85,6 +85,7 @@ export const WheelControls = {
       const seconds = Math.max(0, Math.ceil(this.remainingSeconds))
       return seconds > 0 ? `Listening (${seconds}s)` : "Listening..."
     },
+    deleteMapping(m) { this.request("delete", { id: m.id }) },
   },
   template: `
     <div>
@@ -94,7 +95,7 @@ export const WheelControls = {
         <p v-if="!loading && !available && !mappings.length" style="color: var(--text-muted);">The wheel control service is starting.</p>
         <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
           <button type="button" class="gx-btn" :disabled="disabled() || !mappings.length" @click="request(testing ? 'test-stop' : 'test')">{{ testing ? 'Stop Testing' : 'Test Buttons' }}</button>
-          <button type="button" class="gx-btn" style="background:var(--error);color:var(--on-error);" :disabled="disabled() || !mappings.length" @click="request('clear')">Clear All</button>
+          <button type="button" class="gx-btn gx-btn--danger" :disabled="disabled() || !mappings.length" @click="request('clear')">Clear All</button>
         </div>
         <div v-if="testing && lastTested" style="margin-bottom:12px;">
           <span class="gx-chip" :style="lastTested.mapped ? 'background:var(--success);' : 'background:var(--error);'">{{ lastTested.mapped ? 'Successful' : 'Not mapped' }}</span>
@@ -125,14 +126,14 @@ export const WheelControls = {
               <span class="gx-row__desc">{{ configured(slot) ? (slot.label || slot.key) : 'Not configured' }}</span>
             </div>
             <button v-if="configured(slot)" type="button" class="gx-btn gx-btn--tonal" :disabled="disabled() || testing" @click="learn(i)">{{ listenLabel(i) }}</button>
-            <span v-if="mappingsOf(i).length" class="gx-row__desc">{{ mappingsOf(i).map(m => m.event_name).join(', ') }}</span>
+            <span v-if="mappingsOf(i).length" class="gx-chip gx-chip--dev" v-for="m in mappingsOf(i)" :key="m.id || m.event_code" style="display:inline-flex; align-items:center; gap:4px;">{{ m.event_name || ('Button ' + m.event_code) }}<button type="button" class="gx-chip-x" :disabled="disabled() || testing" title="Remove mapping" @click="deleteMapping(m)"><i class="bi bi-x"></i></button></span>
           </div>
         </div>
         <p v-if="!configured(slots[0]) && !configured(slots[1]) && !configured(slots[2])" style="color:var(--text-muted); margin:0;">Choose and enable these slots in Toggles to map buttons to them.</p>
 
         <h4 style="margin:16px 0 8px;">Controller-only Actions</h4>
         <p style="color:var(--text-muted); margin:0 0 8px;">Ten additional actions for physical buttons. These never appear as on-screen Favorites.</p>
-        <div style="display:grid; gap:8px;">
+        <div style="display:grid; gap:8px; grid-template-columns:repeat(auto-fill,minmax(280px,1fr));">
           <div v-for="(slot, i) in controllerSlots" :key="'act'+i" class="gx-card" style="padding:var(--sp-3); display:grid; gap:8px; margin:0;">
             <div class="gx-row" style="border:none; padding:0; flex-wrap:wrap;">
               <div class="gx-row__info">
@@ -154,8 +155,8 @@ export const WheelControls = {
                 :value="Number(slot.value ?? 30)" :disabled="disabled()" @change="onSpeedChange(i, $event)" />
             </div>
             <div v-if="learningAt(actionSlotIndex(i))" style="color:var(--text-muted); font-size:var(--fs-sm);">Press one button on your controller, macropad, or keyboard.</div>
-            <div v-if="mappingsOf(actionSlotIndex(i)).length">
-              <span v-for="m in mappingsOf(actionSlotIndex(i))" :key="m.id || m.event_code" class="gx-chip gx-chip--dev" style="margin-right:4px;">{{ m.event_name || ('Button ' + m.event_code) }}</span>
+            <div v-if="mappingsOf(actionSlotIndex(i)).length" style="display:flex; flex-wrap:wrap; gap:4px;">
+              <span v-for="m in mappingsOf(actionSlotIndex(i))" :key="m.id || m.event_code" class="gx-chip gx-chip--dev" style="display:inline-flex; align-items:center; gap:4px;">{{ m.event_name || ('Button ' + m.event_code) }}<button type="button" class="gx-chip-x" :disabled="disabled() || testing" title="Remove mapping" @click="deleteMapping(m)"><i class="bi bi-x"></i></button></span>
             </div>
           </div>
         </div>

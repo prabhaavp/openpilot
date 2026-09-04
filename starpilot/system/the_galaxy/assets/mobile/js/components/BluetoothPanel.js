@@ -115,7 +115,7 @@ export const BluetoothPanel = {
             <button v-if="d.paired || d.connected" type="button" class="gx-btn gx-btn--tonal" :disabled="!!busy" @click="connect(d)">{{ d.connected ? 'Disconnect' : 'Connect' }}</button>
             <button v-if="d.audio" type="button" class="gx-btn gx-btn--tonal" :disabled="!!busy" @click="audio(d)">{{ selectedAudio.toUpperCase() === address(d) ? 'Stop Using for Audio' : 'Use for Audio' }}</button>
             <button v-if="d.audio && d.connected" type="button" class="gx-btn gx-btn--tonal" :disabled="offroadDisabled()" @click="testAudio(d)">Test Audio</button>
-            <button v-if="d.paired" type="button" class="gx-btn" style="background:var(--error);color:var(--on-error);" :disabled="offroadDisabled()" @click="forget(d)"><i class="bi bi-trash"></i></button>
+            <button v-if="d.paired" type="button" class="gx-btn gx-btn--danger" :disabled="offroadDisabled()" @click="forget(d)"><i class="bi bi-trash"></i></button>
           </div>
         </div>
 
