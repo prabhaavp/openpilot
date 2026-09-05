@@ -24,6 +24,8 @@ import secrets
 import selectors
 import shutil
 import signal
+import socket
+import struct
 import subprocess
 import numpy as np
 from msgq.visionipc import VisionIpcClient, VisionStreamType
@@ -9533,6 +9535,95 @@ def setup(app):
         )
     return {"error": "Video not found"}, 404
 
+_GALAXY_MDNS_GROUP = "224.0.0.251"
+_GALAXY_MDNS_PORT = 5353
+GALAXY_HOSTNAME = "galaxy.local"
+
+
+def _mdns_encode(name):
+  out = bytearray()
+  for label in name.split("."):
+    if label:
+      out.append(len(label))
+      out += label.encode("ascii")
+  out.append(0)
+  return bytes(out)
+
+
+def _mdns_query_for_galaxy(data):
+  """True if `data` is a multicast DNS query whose question name is galaxy.local."""
+  if len(data) < 12 or data[2] & 0x80:
+    return False
+  labels = []
+  i = 12
+  while i < len(data):
+    length = data[i]
+    if length == 0:
+      return ".".join(labels).lower() == GALAXY_HOSTNAME
+    if length & 0xC0:
+      return False
+    i += 1
+    if i + length > len(data):
+      return False
+    labels.append(data[i:i + length].decode("ascii", "ignore").lower())
+    i += length
+  return False
+
+
+def _mdns_a_response(ip):
+  header = struct.pack(">HHHHHH", 0, 0x8400, 0, 1, 0, 0)
+  record = struct.pack(">HHIH", 1, 0x8001, 120, 4)
+  return header + _mdns_encode(GALAXY_HOSTNAME) + record + socket.inet_aton(ip)
+
+
+def _local_ip_for(dest_ip):
+  sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+  try:
+    sock.connect((dest_ip, _GALAXY_MDNS_PORT))
+    return sock.getsockname()[0]
+  except OSError:
+    return None
+  finally:
+    sock.close()
+
+
+def _galaxy_mdns_responder():
+  try:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("", _GALAXY_MDNS_PORT))
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                    struct.pack("=4sl", socket.inet_aton(_GALAXY_MDNS_GROUP), socket.INADDR_ANY))
+  except OSError:
+    cloudlog.exception("Galaxy: mDNS responder setup failed")
+    return
+  while True:
+    try:
+      data, addr = sock.recvfrom(2048)
+      if _mdns_query_for_galaxy(data) and (ip := _local_ip_for(addr[0])):
+        destination = addr if addr[1] != _GALAXY_MDNS_PORT else (_GALAXY_MDNS_GROUP, _GALAXY_MDNS_PORT)
+        sock.sendto(_mdns_a_response(ip), destination)
+    except OSError:
+      cloudlog.exception("Galaxy: mDNS responder loop error")
+
+
+def _galaxy_redirect_rule(op, port):
+  return ["sudo", "iptables", "-t", "nat", op, "PREROUTING",
+          "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-ports", str(port)]
+
+
+def _galaxy_ensure_port80_redirect(port):
+  try:
+    present = subprocess.run(_galaxy_redirect_rule("-C", port), capture_output=True, timeout=10).returncode == 0
+  except (OSError, subprocess.SubprocessError):
+    present = False
+  if not present:
+    try:
+      cloudlog.warning(f"Galaxy: redirecting port 80 -> {port}")
+      subprocess.run(_galaxy_redirect_rule("-A", port), capture_output=True, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+      cloudlog.exception("Galaxy: port 80 redirect failed")
+
 def main():
   while not _ensure_galaxy_web_deps():
     print(f"The Galaxy waiting for Flask dependency ({_GALAXY_WEB_DEPS_ERROR}); retrying in 60s.")
@@ -9551,6 +9642,11 @@ def main():
 
   if debug:
     print("\"The Galaxy\" is not running on a comma device, enabling debug mode")
+
+  if on_device:
+    threading.Thread(target=_galaxy_mdns_responder, daemon=True, name="the_galaxy_mdns").start()
+    threading.Thread(target=_galaxy_ensure_port80_redirect, args=(port,), daemon=True, name="the_galaxy_port80").start()
+    print(f"The Galaxy is available at http://{GALAXY_HOSTNAME}")
 
   app.secret_key = secrets.token_hex(32)
   app.run(host=host, port=port, debug=debug, use_reloader=use_reloader, threaded=True)
