@@ -43,23 +43,19 @@ def test_hostname_is_galaxy_local():
   assert galaxy.GALAXY_HOSTNAME == "galaxy.local"
 
 
-def test_mdns_responder_replies_to_galaxy_local_query():
-  query = _build_query("galaxy.local")
-  assert galaxy._mdns_query_for_galaxy(query) is True
+def test_returns_a_qtype_for_galaxy_local_query():
+  assert galaxy._mdns_query_qtype(_build_query("galaxy.local")) == 1
 
 
-def test_mdns_responder_ignores_unrelated_queries():
-  assert galaxy._mdns_query_for_galaxy(_build_query("ThePond.local")) is False
+def test_returns_none_for_unrelated_queries():
+  assert galaxy._mdns_query_qtype(_build_query("ThePond.local")) is None
+  assert galaxy._mdns_query_qtype(_build_query("foo.galaxy.local")) is None
 
 
-def test_mdns_responder_ignores_subdomain_queries():
-  assert galaxy._mdns_query_for_galaxy(_build_query("foo.galaxy.local")) is False
-
-
-def test_mdns_responder_ignores_responses():
+def test_returns_none_for_responses():
   query = bytearray(_build_query("galaxy.local"))
   query[2] |= 0x80
-  assert galaxy._mdns_query_for_galaxy(bytes(query)) is False
+  assert galaxy._mdns_query_qtype(bytes(query)) is None
 
 
 def test_build_a_response_is_well_formed():
@@ -71,3 +67,11 @@ def test_build_a_response_is_well_formed():
   assert ancount == 1
   assert galaxy._mdns_encode(galaxy.GALAXY_HOSTNAME).lower() in response.lower()
   assert response[-4:] == socket.inet_aton(ip)
+
+
+def test_build_aaaa_response_is_well_formed():
+  ipv6 = "2601:405:4500:5630:20a:f5ff:fe3d:ec83"
+  response = galaxy._mdns_aaaa_response(ipv6)
+  transaction_id, flags, qdcount, ancount, nscount, arcount = struct.unpack(">HHHHHH", response[:12])
+  assert ancount == 1
+  assert response[-16:] == socket.inet_pton(socket.AF_INET6, ipv6)

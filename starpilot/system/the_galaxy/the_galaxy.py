@@ -9550,30 +9550,42 @@ def _mdns_encode(name):
   return bytes(out)
 
 
-def _mdns_query_for_galaxy(data):
-  """True if `data` is a multicast DNS query whose question name is galaxy.local."""
+def _mdns_query_qtype(data):
+  """Return the RR type of the first question if it asks about galaxy.local, else None.
+
+  Handles A (1), AAAA (28) and ANY (255); ignores responses and other names.
+  """
   if len(data) < 12 or data[2] & 0x80:
-    return False
+    return None
   labels = []
   i = 12
   while i < len(data):
     length = data[i]
     if length == 0:
-      return ".".join(labels).lower() == GALAXY_HOSTNAME
+      if ".".join(labels).lower() != GALAXY_HOSTNAME or i + 4 > len(data):
+        return None
+      qtype = struct.unpack(">H", data[i + 1:i + 3])[0]
+      return qtype if qtype in (1, 28, 255) else None
     if length & 0xC0:
-      return False
+      return None
     i += 1
     if i + length > len(data):
-      return False
+      return None
     labels.append(data[i:i + length].decode("ascii", "ignore").lower())
     i += length
-  return False
+  return None
 
 
 def _mdns_a_response(ip):
   header = struct.pack(">HHHHHH", 0, 0x8400, 0, 1, 0, 0)
   record = struct.pack(">HHIH", 1, 0x8001, 120, 4)
   return header + _mdns_encode(GALAXY_HOSTNAME) + record + socket.inet_aton(ip)
+
+
+def _mdns_aaaa_response(ipv6):
+  header = struct.pack(">HHHHHH", 0, 0x8400, 0, 1, 0, 0)
+  record = struct.pack(">HHIH", 28, 0x8001, 120, 16)
+  return header + _mdns_encode(GALAXY_HOSTNAME) + record + socket.inet_pton(socket.AF_INET6, ipv6)
 
 
 def _local_ip_for(dest_ip):
@@ -9585,6 +9597,25 @@ def _local_ip_for(dest_ip):
     return None
   finally:
     sock.close()
+
+
+_local_ipv6_cache = None
+
+
+def _local_ipv6():
+  global _local_ipv6_cache
+  if _local_ipv6_cache is not None:
+    return _local_ipv6_cache or None
+  _local_ipv6_cache = ""
+  try:
+    for _, _, _, _, sockaddr in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET6, socket.SOCK_DGRAM):
+      ip = sockaddr[0]
+      if ip != "::1" and not ip.lower().startswith("fe80:"):
+        _local_ipv6_cache = ip
+        break
+  except OSError:
+    pass
+  return _local_ipv6_cache or None
 
 
 def _galaxy_mdns_responder():
@@ -9609,9 +9640,14 @@ def _galaxy_mdns_responder():
   while True:
     try:
       data, addr = sock.recvfrom(2048)
-      if _mdns_query_for_galaxy(data) and (ip := _local_ip_for(addr[0])):
-        destination = addr if addr[1] != _GALAXY_MDNS_PORT else (_GALAXY_MDNS_GROUP, _GALAXY_MDNS_PORT)
+      qtype = _mdns_query_qtype(data)
+      if qtype is None or not (ip := _local_ip_for(addr[0])):
+        continue
+      destination = addr if addr[1] != _GALAXY_MDNS_PORT else (_GALAXY_MDNS_GROUP, _GALAXY_MDNS_PORT)
+      if qtype in (1, 255):
         sock.sendto(_mdns_a_response(ip), destination)
+      if qtype in (28, 255) and (ipv6 := _local_ipv6()):
+        sock.sendto(_mdns_aaaa_response(ipv6), destination)
     except OSError:
       cloudlog.exception("Galaxy: mDNS responder loop error")
 
