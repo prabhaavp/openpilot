@@ -9588,14 +9588,23 @@ def _local_ip_for(dest_ip):
 
 
 def _galaxy_mdns_responder():
-  try:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("", _GALAXY_MDNS_PORT))
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
-                    struct.pack("=4sl", socket.inet_aton(_GALAXY_MDNS_GROUP), socket.INADDR_ANY))
-  except OSError:
-    cloudlog.exception("Galaxy: mDNS responder setup failed")
+  sock = None
+  for _ in range(10):
+    try:
+      sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+      sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+      sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+      sock.bind(("", _GALAXY_MDNS_PORT))
+      sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                      struct.pack("=4sl", socket.inet_aton(_GALAXY_MDNS_GROUP), socket.INADDR_ANY))
+      break
+    except OSError:
+      if sock is not None:
+        sock.close()
+        sock = None
+      time.sleep(5)
+  if sock is None:
+    cloudlog.exception("Galaxy: mDNS responder failed to bind UDP 5353")
     return
   while True:
     try:
@@ -9607,22 +9616,40 @@ def _galaxy_mdns_responder():
       cloudlog.exception("Galaxy: mDNS responder loop error")
 
 
+_IPTABLES_BINS = ("iptables-legacy", "iptables")
+
+
+def _galaxy_iptables_bin():
+  for binary in _IPTABLES_BINS:
+    try:
+      result = subprocess.run(["sudo", binary, "-t", "nat", "-L", "-n"], capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+      continue
+    if result.returncode == 0:
+      return binary
+  return None
+
+
 def _galaxy_redirect_rule(op, port):
-  return ["sudo", "iptables", "-t", "nat", op, "PREROUTING",
+  binary = _galaxy_iptables_bin()
+  if binary is None:
+    return None
+  return ["sudo", binary, "-t", "nat", op, "PREROUTING",
           "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-ports", str(port)]
 
 
 def _galaxy_ensure_port80_redirect(port):
+  rule = _galaxy_redirect_rule("-A", port)
+  if rule is None:
+    cloudlog.error("Galaxy: no working iptables backend for port 80 redirect")
+    return
   try:
     present = subprocess.run(_galaxy_redirect_rule("-C", port), capture_output=True, timeout=10).returncode == 0
-  except (OSError, subprocess.SubprocessError):
-    present = False
-  if not present:
-    try:
+    if not present:
       cloudlog.warning(f"Galaxy: redirecting port 80 -> {port}")
-      subprocess.run(_galaxy_redirect_rule("-A", port), capture_output=True, timeout=10, check=False)
-    except (OSError, subprocess.SubprocessError):
-      cloudlog.exception("Galaxy: port 80 redirect failed")
+      subprocess.run(rule, capture_output=True, timeout=10, check=False)
+  except (OSError, subprocess.SubprocessError):
+    cloudlog.exception("Galaxy: port 80 redirect failed")
 
 def main():
   while not _ensure_galaxy_web_deps():
