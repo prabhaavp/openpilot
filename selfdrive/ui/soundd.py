@@ -96,11 +96,6 @@ sound_list: dict[int, tuple[str, int | None, float]] = {
   starpilot_alert_key(StarPilotAudibleAlert.thisIsFine): ("this_is_fine.wav", 1, MAX_VOLUME),
   starpilot_alert_key(StarPilotAudibleAlert.uwu): ("uwu.wav", 1, MAX_VOLUME),
 }
-if HARDWARE.get_device_type() in ("tici", "tizi"):
-  sound_list.update({
-    AudibleAlert.engage: ("engage_tizi.wav", 1, MAX_VOLUME),
-    AudibleAlert.disengage: ("disengage_tizi.wav", 1, MAX_VOLUME),
-  })
 
 def check_selfdrive_timeout_alert(sm):
   ss_missing = time.monotonic() - sm.recv_time['selfdriveState']
