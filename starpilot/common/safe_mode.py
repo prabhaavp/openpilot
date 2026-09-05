@@ -117,6 +117,7 @@ SAFE_MODE_MANAGED_KEYS = (
   "ReduceLateralAccelerationSnow",
   "ConditionalExperimental",
   "ConditionalChill",
+  "HybridExperimental",
   "CECurves",
   "CECurvesLead",
   "CELead",
