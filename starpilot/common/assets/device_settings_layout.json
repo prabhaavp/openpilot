@@ -3746,16 +3746,6 @@
         "settings_tier": "simple"
       },
       {
-        "key": "SubaruAvhOnAtStartup",
-        "label": "AVH On at Startup",
-        "description": "For supported Subaru Legacy 2025 vehicles, send one momentary Auto Vehicle Hold request after ignition while stationary and in Park or Neutral.",
-        "picker_description": "Requests Auto Vehicle Hold ON once after ignition on the supported Legacy.",
-        "data_type": "bool",
-        "ui_type": "toggle",
-        "galaxy_only": true,
-        "settings_tier": "simple"
-      },
-      {
         "key": "ClusterOffset",
         "label": "Dashboard Speed Offset",
         "description": "The speed offset openpilot uses to match the speed on the dashboard display.",
@@ -3782,6 +3772,7 @@
         "picker_description": "Holds Toyota/Lexus brakes at stops when cruise is available.",
         "data_type": "bool",
         "ui_type": "toggle",
+        "galaxy_only": true,
         "settings_tier": "simple"
       },
       {
@@ -4983,6 +4974,15 @@
         "settings_tier": "simple"
       },
       {
+        "key": "GalaxyMobileDefault",
+        "label": "Try the Big Dipper Web UI",
+        "description": "Open the Big Dipper at the top-level Galaxy link instead of the classic Galaxy. The classic UI remains available at /classic and Big Dipper at /mobile regardless of this toggle.",
+        "picker_description": "Serve the Big Dipper as the default landing page.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "settings_tier": "advanced"
+      },
+      {
         "key": "AlphaLongitudinalEnabled",
         "label": "openpilot Longitudinal Control (Alpha)",
         "description": "Enable openpilot longitudinal control for vehicles that support it. This replaces the vehicle's stock ACC and may disable automatic emergency braking. Changing this setting restarts the driving stack.",
@@ -5013,6 +5013,18 @@
         "picker_description": "Matches StarPilot's target speed with Hyundai RES/SET.",
         "data_type": "bool",
         "ui_type": "toggle",
+        "parent_key": "GalaxyDeveloperMode",
+        "settings_tier": "advanced"
+      },
+      {
+        "key": "SubaruRedneckCruise",
+        "label": "Subaru Redneck Cruise",
+        "description": "On supported Subaru Impreza-family cars, use stock Resume/Set button presses to match the cluster set speed to StarPilot's target.",
+        "picker_description": "Matches StarPilot's target speed with Subaru Resume/Set.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "galaxy_only": true,
+        "vehicle_makes": ["Subaru"],
         "parent_key": "GalaxyDeveloperMode",
         "settings_tier": "advanced"
       },

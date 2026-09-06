@@ -110,7 +110,9 @@ def test_ui_ports_all_tool_views():
     "js/views/Tuning.js": ["LateralTuningPanel", "LongitudinalManeuvers"],
     "js/views/Navigation.js": ["getNavigation", "setNavigation", "MapsPanel", "NavigationKeysPanel"],
     "js/views/ToolEmbed.js": ["/manage_maps", "/manage_navigation_keys"],
-    "js/views/SystemTools.js": ["backupToggles", "restoreToggles", "getUpdateBranches", "factoryReset"],
+    "js/views/SystemTools.js": [
+      "backupToggles", "restoreToggles", "getToggleProfiles", "saveToggleProfile", "loadToggleProfile", "getUpdateBranches", "factoryReset",
+    ],
     "js/components/WheelControls.js": ["getWheelControlsStatus"],
     "js/components/BluetoothPanel.js": ["getBluetoothStatus"],
   }
@@ -323,15 +325,17 @@ def test_ui_galaxy_background_is_css_only_and_lightweight():
 
 def test_galaxy_py_serves_classic_at_root_and_new_ui_at_mobile():
   source = GALAXY_PY.read_text(encoding="utf-8")
-  # The classic Galaxy SPA is the default landing at / (original behaviour).
+  # The classic Galaxy SPA is the default landing at / (original behaviour) unless
+  # the "New Galaxy by Default" (GalaxyMobileDefault) toggle is enabled.
   assert '@app.route("/", methods=["GET"])' in source
   assert 'render_template("index.html")' in source
+  assert 'params.get_bool("GalaxyMobileDefault")' in source
   # Classic also stays reachable at /classic (page-in-page embed target).
   assert '@app.route("/classic", methods=["GET"])' in source
-  # The modern Vue UI is served at /mobile (and /ui), not the root.
+  # The modern Vue UI is served at /mobile, not the root.
   assert '@app.route("/mobile", methods=["GET"])' in source
-  assert '@app.route("/ui", methods=["GET"])' in source
   assert 'Path(app.static_folder) / "mobile" / "index.html"' in source
+  assert '@app.route("/ui", methods=["GET"])' not in source
 
 
 def test_ui_manifest_is_valid_pwa_manifest():
@@ -501,6 +505,10 @@ assert(P.countAdvancedHiddenByDeveloperMode([sec], { GalaxyDeveloperMode: true }
 const slider = { key: "DeviceShutdown", data_type: "int", min: 1, max: 30, step: 1 }
 assert(P.snapNumericToBoundsAndStep(17.9, P.numericBounds(slider, {}), 0) === 18, "snap")
 assert(P.formatSliderValue(6, "1", 0, "DeviceShutdown") === "6 hours", "format")
+const laneOffset = { key: "LaneCenterOffset", data_type: "float", min: 0, max: 0.3, step: 0.01 }
+const laneBounds = P.numericBounds(laneOffset, {})
+assert(laneBounds.min === -0.3, "lane offset keeps signed lower bound")
+assert(P.snapNumericToBoundsAndStep(-0.01, laneBounds, 2) === -0.01, "lane offset snaps below zero")
 console.log("params.js logic OK")
 """,
     encoding="utf-8",

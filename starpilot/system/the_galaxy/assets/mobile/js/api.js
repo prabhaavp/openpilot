@@ -37,6 +37,10 @@ async function delOk(url) {
   return (await fetch(url, { method: "DELETE" })).ok
 }
 
+function postOk(url, opts = {}) {
+  return fetch(url, initFor({ ...opts, method: "POST" })).then((res) => res.ok)
+}
+
 export const api = {
   postAction(endpoint) { return request(endpoint, { method: "POST" }) },
   getOptions(endpoint) { return request(endpoint) },
@@ -101,10 +105,37 @@ export const api = {
   deleteAllRoutes(includePreserved) { return request(`/api/routes/delete_all?include_preserved=${includePreserved}`, { method: "DELETE" }) },
   getRouteLogs(name) { return request(`/api/routes/${encodeURIComponent(name)}/logs`) },
 
-  getScreenRecordings() { return request("/api/screen_recordings/list") },
+  async screenRecordingsStream({ onProgress, onRecordings, signal } = {}) {
+    const res = await fetch("/api/screen_recordings/list", { signal })
+    if (!res.ok || !res.body) throw new Error(`Screen recordings request failed (${res.status})`)
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ""
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const events = buffer.split(/\r?\n\r?\n/)
+      buffer = events.pop() || ""
+      for (const event of events) {
+        const lines = event.split(/\r?\n/).filter((l) => l.startsWith("data:"))
+        if (!lines.length) continue
+        try {
+          const payload = JSON.parse(lines.map((l) => l.slice(5).trimStart()).join("\n"))
+          if (Number.isFinite(payload.progress)) onProgress?.(payload.progress)
+          onRecordings?.(Array.isArray(payload.recordings) ? payload.recordings : [])
+        } catch (e) {  }
+      }
+    }
+  },
+  screenRecordingVideoUrl(filename) { return `/api/screen_recordings/download/${encodeURIComponent(filename)}` },
   deleteScreenRecording(filename) { return request(`/api/screen_recordings/delete/${encodeURIComponent(filename)}`, { method: "DELETE" }) },
   deleteAllScreenRecordings() { return request("/api/screen_recordings/delete_all", { method: "DELETE" }) },
   renameScreenRecording(oldName, newName) { return request("/api/screen_recordings/rename", { method: "POST", data: { old: oldName, new: newName } }) },
+
+  getModelLab() { return request("/api/model-laboratory", { cache: "no-store" }) },
+  saveModelLab(config) { return request("/api/model-laboratory", { method: "PUT", data: config }) },
+  prepareModelLabArtifact(model) { return request("/api/model-laboratory/download", { method: "POST", data: { model } }) },
 
   getErrorLogs() { return request("/api/error_logs", { headers: { Accept: "application/json" } }) },
   getErrorLog(filename) { return fetch(`/api/error_logs/${encodeURIComponent(filename)}`).then((r) => r.text()) },
@@ -208,6 +239,10 @@ export const api = {
     if (!res.ok) throw new Error(data?.error || data?.message || "Unpairing failed.")
     return data
   },
+
+  getToggleProfiles() { return request("/api/toggles/profiles", { cache: "no-store" }) },
+  saveToggleProfile(slot) { return request(`/api/toggles/profiles/${encodeURIComponent(slot)}/save`, { method: "POST" }) },
+  loadToggleProfile(slot) { return request(`/api/toggles/profiles/${encodeURIComponent(slot)}/load`, { method: "POST" }) },
 
   selectTestingGround(body) { return request("/api/testing_grounds/select", { method: "POST", data: body }) },
 
