@@ -1,4 +1,4 @@
-import { api, showSnackbar } from "../api.js"
+import { api, showSnackbar, probeLocal, localHttpOrigin } from "../api.js"
 import { GalaxyConfirm } from "../components/GalaxyModal.js"
 import { GalaxyTabs } from "../components/GalaxyTabs.js"
 import { GxNotice } from "../components/GxNotice.js"
@@ -52,11 +52,15 @@ function normalizeRoute(r) {
   }
 }
 
-function localDeviceUrl(ip, route = "/") {
+function lanHost(ip) {
   const raw = String(ip || "").trim()
   if (!raw || raw === "unknown") return ""
-  const host = raw.includes(":") && !raw.startsWith("[") ? `[${raw}]` : raw
-  return `http://${host}:8082/#${route}`
+  return raw.includes(":") && !raw.startsWith("[") ? `[${raw}]` : raw
+}
+
+function localDeviceUrl(ip, route = "/") {
+  const host = lanHost(ip)
+  return host ? `http://${host}:8082/#${route}` : ""
 }
 
 export const Recordings = {
@@ -83,6 +87,12 @@ export const Recordings = {
       logsData: null,
       onFirestar: isFirestarOrigin(),
       localUrl: "",
+      // On the device's own address (not Firestar) everything is already local.
+      // From the tunnel origin we only enable playback once the device is found
+      // on the LAN; otherwise recordings stay hidden.
+      streamReady: !isFirestarOrigin(),
+      canStream: !isFirestarOrigin(),
+      localOrigin: "",
       // Screen recordings subtab
       screenLoading: false,
       screenError: "",
@@ -251,6 +261,12 @@ export const Recordings = {
       const sep = url.includes("?") ? "&" : "?"
       return `${url}${sep}camera=${encodeURIComponent(this.selectedCamera)}${low ? "&quality=low" : ""}`
     },
+    // Heavy media (video, thumbnails) streams straight off the device's Flask server
+    // over the LAN when reachable, bypassing the tunnel. App JSON stays on the tunnel.
+    mediaUrl(path) {
+      if (this.localOrigin && typeof path === "string" && path.startsWith("/")) return this.localOrigin + path
+      return path
+    },
     playSegment() {
       const video = this.$refs.player
       if (!this.segments[this.current]) return
@@ -264,7 +280,7 @@ export const Recordings = {
         return
       }
       this._playRetries = 0
-      video.src = this.cameraUrl(this.segments[this.current])
+      video.src = this.mediaUrl(this.cameraUrl(this.segments[this.current]))
       video.load()
       video.play().catch(() => {})
     },
@@ -296,14 +312,14 @@ export const Recordings = {
       this.recPlay = null
     },
     screenUrl(filename) {
-      return api.screenRecordingVideoUrl(filename)
+      return this.mediaUrl(api.screenRecordingVideoUrl(filename))
     },
     playRec(rec) {
       this.recPlay = rec
     },
     downloadRec(rec) {
       const a = document.createElement("a")
-      a.href = api.screenRecordingVideoUrl(rec.filename)
+      a.href = this.screenUrl(rec.filename)
       a.download = rec.filename
       a.click()
     },
@@ -344,10 +360,21 @@ export const Recordings = {
   },
   async mounted() {
     if (this.onFirestar) {
+      // Tunnel origin: never round-trip dashcam/screen video through the Galaxy
+      // link. If the device is reachable on the same LAN we stream it directly;
+      // otherwise we keep it hidden and explain why.
+      let lanIp = ""
       try {
         const status = await api.getDeviceStatus()
+        lanIp = status?.lanIp || ""
         this.localUrl = localDeviceUrl(status?.lanIp, "/recordings")
       } catch (e) {}
+      if (lanIp && await probeLocal(lanIp)) {
+        this.localOrigin = localHttpOrigin(lanIp)
+        this.canStream = true
+      }
+      this.streamReady = true
+      if (this.canStream) await this.loadRoutes()
       return
     }
     await this.loadRoutes()
@@ -358,7 +385,7 @@ export const Recordings = {
   },
   template: `
     <div>
-      <template v-if="!onFirestar">
+      <template v-if="canStream">
       <h2 style="margin-top:0;">Recordings</h2>
 
       <GalaxyTabs :items="{ routes: 'Dashcam Routes', screen: 'Screen Recordings' }" :active="sub" @select="setSub" />
@@ -440,7 +467,7 @@ export const Recordings = {
         <div v-else-if="screenError" class="gx-empty" style="color: var(--error);">{{ screenError }}</div>
         <div v-else-if="!recordings.length" class="gx-empty">No screen recordings found.</div>
         <article v-for="r in recordings" :key="r.filename" class="gx-row" style="cursor:pointer;" @click="playRec(r)">
-          <img :src="r.png" alt="" loading="lazy" style="width:84px; height:auto; border-radius:var(--radius-sm); object-fit:cover; flex:none;">
+          <img :src="mediaUrl(r.png)" alt="" loading="lazy" style="width:84px; height:auto; border-radius:var(--radius-sm); object-fit:cover; flex:none;">
           <div class="gx-row__info">
             <span class="gx-row__label">{{ screenDisplayName(r) }}</span>
             <span class="gx-row__desc">{{ r.filename }}</span>
@@ -518,8 +545,12 @@ export const Recordings = {
       </Teleport>
       </template>
 
+      <template v-else-if="!streamReady">
+        <div class="gx-empty"><i class="bi bi-wifi"></i> Checking for the device on your local network…</div>
+      </template>
+
       <GxNotice v-else tone="info" icon="bi-satellite" title="Recordings unavailable via Galaxy">
-        Recordings are unavailable via Galaxy for bandwidth reasons. If you are on the same local network, connect here:
+        Streaming dashcam and screen recordings over the Galaxy link is disabled for bandwidth reasons. They play directly over your local network instead, so your phone and the device must both be on the same Wi-Fi. Once they are, this page will load automatically — or open the device's local address here:
         <br />
         <a v-if="localUrl" class="gx-btn gx-btn--tonal" :href="localUrl" style="margin-top:var(--sp-3);">
           <i class="bi bi-box-arrow-up-right"></i> Open Recordings Locally

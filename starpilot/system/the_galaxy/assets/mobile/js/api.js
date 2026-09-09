@@ -41,6 +41,32 @@ function postOk(url, opts = {}) {
   return fetch(url, initFor({ ...opts, method: "POST" })).then((res) => res.ok)
 }
 
+function lanHost(ip) {
+  const raw = String(ip || "").trim()
+  if (!raw || raw === "unknown") return ""
+  return raw.includes(":") && !raw.startsWith("[") ? `[${raw}]` : raw
+}
+
+export async function probeLocal(ip, timeoutMs = 8000) {
+  const host = lanHost(ip)
+  if (!host) return false
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    await fetch(`http://${host}:8082/`, { method: "HEAD", mode: "no-cors", cache: "no-store", signal: controller.signal })
+    return true
+  } catch (e) {
+    return false
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+export function localHttpOrigin(ip) {
+  const host = lanHost(ip)
+  return host ? `http://${host}:8082` : ""
+}
+
 export const api = {
   postAction(endpoint) { return request(endpoint, { method: "POST" }) },
   getOptions(endpoint) { return request(endpoint) },

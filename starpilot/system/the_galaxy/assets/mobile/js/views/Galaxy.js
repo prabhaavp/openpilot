@@ -89,9 +89,9 @@ export const Galaxy = {
           <div class="gx-alert gx-alert--warn" style="border:none;margin:0;">
             <i class="bi bi-satellite gx-alert__icon"></i>
             <div class="gx-alert__body">
-              <strong>Galaxy Pairing Unavailable via Galaxy</strong>
+              <strong>Currently Paired or Galaxy Pairing Unavailable</strong>
               <span>
-                Galaxy pairing requires a direct connection. If you are on the same local network, connect here:
+                Galaxy pairing requires a direct connection. If you are on the same local network, connect here and come back to this page:
                 <br />
                 <a v-if="localUrl" class="gx-btn gx-btn--tonal" :href="localUrl" style="margin-top:var(--sp-3);">
                   <i class="bi bi-box-arrow-up-right"></i> Open Galaxy Locally
