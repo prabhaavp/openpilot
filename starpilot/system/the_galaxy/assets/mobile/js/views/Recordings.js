@@ -1,8 +1,9 @@
-import { api, showSnackbar, probeLocal, localHttpOrigin } from "../api.js"
+import { api, showSnackbar } from "../api.js"
 import { GalaxyConfirm } from "../components/GalaxyModal.js"
 import { GalaxyTabs } from "../components/GalaxyTabs.js"
 import { GxNotice } from "../components/GxNotice.js"
-import { isFirestarOrigin } from "../components/PwaInstallSection.js"
+import { FIRESTAR_HOST, isFirestarOrigin } from "../components/PwaInstallSection.js"
+import { ensureSharedLocalClient } from "../webtransport.js"
 
 function fmtDuration(seconds) {
   seconds = Number(seconds) || 0
@@ -79,6 +80,8 @@ export const Recordings = {
       playerRoute: null,
       playerLoading: false,
       playerError: "",
+      segmentLoading: false,
+      mseActive: false,
       segments: [],
       current: 0,
       cameras: [],
@@ -98,7 +101,10 @@ export const Recordings = {
       screenError: "",
       screenProgress: 0,
       recordings: [],
+      screenThumbs: {},
       recPlay: null,
+      recPlaySrc: "",
+      localTransportActive: false,
     }
   },
   computed: {
@@ -124,6 +130,12 @@ export const Recordings = {
       }
       return list.sort(sorters[this.sortOrder] || sorters.newest)
     },
+    galaxyUrl() {
+      if (this.onFirestar) {
+        try { return window.location.origin } catch (error) { return "" }
+      }
+      return `https://${FIRESTAR_HOST}`
+    },
   },
   methods: {
     fmtDuration,
@@ -141,13 +153,18 @@ export const Recordings = {
       this.routes = []
       this.progress = 0
       const seen = new Set()
+      console.log("[Galaxy:Recordings] loadRoutes: start, localTransportActive=", this.localTransportActive)
       try {
         this.controller?.abort()
         this.controller = new AbortController()
         await api.getRoutesStream({
           signal: this.controller.signal,
-          onProgress: (p) => { this.progress = p },
+          onProgress: (p) => {
+            console.log("[Galaxy:Recordings] progress", p)
+            this.progress = p
+          },
           onRoutes: (raw) => {
+            console.log("[Galaxy:Recordings] routes chunk", raw.length)
             for (const r of raw) {
               if (seen.has(r.name)) continue
               seen.add(r.name)
@@ -155,18 +172,29 @@ export const Recordings = {
             }
           },
         })
+        console.log("[Galaxy:Recordings] loadRoutes: resolved with", this.routes.length, "routes")
       } catch (e) {
+        console.error("[Galaxy:Recordings] loadRoutes failed", e?.name, e?.message)
         if (e?.name !== "AbortError") this.error = "Couldn't load routes. Try refreshing."
       } finally {
         this.loading = false
+        console.log("[Galaxy:Recordings] loadRoutes: end loading=false")
       }
+    },
+    clearThumbs() {
+      for (const url of Object.values(this.screenThumbs)) {
+        try { URL.revokeObjectURL(url) } catch (error) {}
+      }
+      this.screenThumbs = {}
     },
     async loadScreenRecordings() {
       this.screenLoading = true
       this.screenError = ""
       this.recordings = []
+      this.clearThumbs()
       this.screenProgress = 0
       const seen = new Set()
+      console.log("[Galaxy:Recordings] loadScreenRecordings: start")
       try {
         this.recController?.abort()
         this.recController = new AbortController()
@@ -178,10 +206,13 @@ export const Recordings = {
               if (seen.has(r.filename)) continue
               seen.add(r.filename)
               this.recordings.push(r)
+              this.loadThumb(r)
             }
           },
         })
+        console.log("[Galaxy:Recordings] loadScreenRecordings: resolved with", this.recordings.length)
       } catch (e) {
+        console.error("[Galaxy:Recordings] loadScreenRecordings failed", e?.name, e?.message)
         if (e?.name !== "AbortError") this.screenError = "Couldn't load recordings."
       } finally {
         this.screenLoading = false
@@ -240,6 +271,7 @@ export const Recordings = {
       this.playerError = ""
       this._playRetries = 0
       try {
+        if (this.onFirestar) await this.ensureLocalTransport()
         const data = await api.getRoute(route.name)
         const segments = Array.isArray(data.segment_urls) ? data.segment_urls.filter((u) => typeof u === "string") : []
         const cameras = ["forward", "wide", "driver"].filter((c) => data.available_cameras?.includes(c))
@@ -261,13 +293,31 @@ export const Recordings = {
       const sep = url.includes("?") ? "&" : "?"
       return `${url}${sep}camera=${encodeURIComponent(this.selectedCamera)}${low ? "&quality=low" : ""}`
     },
-    // Heavy media (video, thumbnails) streams straight off the device's Flask server
-    // over the LAN when reachable, bypassing the tunnel. App JSON stays on the tunnel.
-    mediaUrl(path) {
-      if (this.localOrigin && typeof path === "string" && path.startsWith("/")) return this.localOrigin + path
-      return path
+    // Heavy media streams straight off the device through the pinned
+    // WebTransport session (blob URL) when the tunnel is active, otherwise the
+    // path is used as-is on the device's own local origin. On the Firestar
+    // relay origin we never allow the bare path: it would pull the video
+    // through the VPS, which is exactly what the local tunnel exists to avoid.
+    async mediaUrl(path, opts) {
+      return api.resolveMediaUrl(path, opts)
     },
-    playSegment() {
+    async ensureLocalTransport() {
+      if (api.localTransportActive()) return true
+      console.log("[Galaxy:Recordings] local transport inactive; reconnecting for local-only playback")
+      try {
+        const client = await ensureSharedLocalClient()
+        if (client?.connected) {
+          this.localTransportActive = true
+          console.log("[Galaxy:Recordings] local transport reconnected via", api.getLocalTransport()?.url || "device")
+          return true
+        }
+      } catch (e) {
+        console.warn("[Galaxy:Recordings] local transport reconnect failed", e?.name, e?.message)
+      }
+      this.localTransportActive = false
+      return false
+    },
+    async playSegment() {
       const video = this.$refs.player
       if (!this.segments[this.current]) return
       // The player mounts inside a Teleport + transition after openPlayer clears
@@ -280,19 +330,171 @@ export const Recordings = {
         return
       }
       this._playRetries = 0
-      video.src = this.mediaUrl(this.cameraUrl(this.segments[this.current]))
-      video.load()
-      video.play().catch(() => {})
+      this.segmentLoading = true
+      this.playerError = ""
+      this.stopPlayback()
+      const requireLocal = this.onFirestar
+      console.log("[Galaxy:Recordings] playSegment", this.current, this.selectedCamera, "onFirestar=" + this.onFirestar, "pipe=" + api.transportLabel(api.localTransportActive()))
+      try {
+        // Prefer progressive fragmented-MP4 streaming so playback starts after a
+        // moment instead of waiting for the whole segment to download. Only needed
+        // on the tunnel origin; the device's own origin streams natively.
+        if (requireLocal) await this.ensureLocalTransport()
+        if (api.localTransportActive()) {
+          const base = this.cameraUrl(this.segments[this.current])
+          const streamPath = `${base}${base.includes("?") ? "&" : "?"}stream=1`
+          try {
+            if (await this.playMse(video, streamPath)) return
+          } catch (mseError) {
+            console.warn("[Galaxy:Recordings] MSE playback failed", mseError?.name, mseError?.message)
+            if (this.mseActive) throw mseError
+          }
+        } else if (requireLocal) {
+          // No local device tunnel: fail loudly instead of streaming the dashcam
+          // video through the Galaxy/VPS relay.
+          throw new Error("Your phone is not connected to the device locally, so this recording is unavailable to protect your bandwidth.")
+        }
+        await this.playSegmentBlob(video)
+      } catch (e) {
+        console.error("[Galaxy:Recordings] playSegment failed", e?.name, e?.message)
+        this.playerError = e?.message || "Could not load this segment from the device."
+      } finally {
+        this.segmentLoading = false
+      }
     },
-    downloadRoute() {
+    mseMimeType() {
+      if (typeof MediaSource === "undefined") return ""
+      const candidates = [
+        'video/mp4; codecs="hvc1.1.6.L93.B0"',
+        'video/mp4; codecs="hev1.1.6.L93.B0"',
+        'video/mp4; codecs="hvc1.1.6.L120.B0"',
+        'video/mp4; codecs="hev1.1.6.L120.B0"',
+        'video/mp4; codecs="avc1.640028"',
+        'video/mp4; codecs="avc1.42E01E"',
+      ]
+      return candidates.find((m) => MediaSource.isTypeSupported(m)) || ""
+    },
+    async playMse(video, path) {
+      const mime = this.mseMimeType()
+      if (!mime) {
+        console.warn("[Galaxy:Recordings] no MediaSource codec matched; using blob playback")
+        return false
+      }
+      const mediaSource = new MediaSource()
+      const url = URL.createObjectURL(mediaSource)
+      this._mseUrl = url
+      this._mseSource = mediaSource
+      video.src = url
+      console.log("[Galaxy:Recordings] MSE start", mime, path)
+      await new Promise((resolve, reject) => {
+        mediaSource.addEventListener("sourceopen", resolve, { once: true })
+        setTimeout(() => reject(new Error("MediaSource did not open")), 5000)
+      })
+      const sourceBuffer = mediaSource.addSourceBuffer(mime)
+      sourceBuffer.mode = "segments"
+      const response = await api.fetchMediaStream(path, { requireLocalTransport: this.onFirestar })
+      if (!response?.ok || !response.body) throw new Error(`Media request failed (${response?.status})`)
+      const reader = response.body.getReader()
+      this._mseReader = reader
+      let started = false
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        if (!value?.length) continue
+        await this.appendMseBuffer(sourceBuffer, value)
+        if (!started) {
+          started = true
+          this.mseActive = true
+          this.segmentLoading = false
+          video.play().catch(() => {})
+          console.log("[Galaxy:Recordings] MSE first chunk appended (" + value.length + "B)")
+        }
+      }
+      try { mediaSource.endOfStream() } catch (error) {}
+      console.log("[Galaxy:Recordings] MSE stream complete")
+      return true
+    },
+    appendMseBuffer(sourceBuffer, chunk) {
+      return new Promise((resolve, reject) => {
+        const onEnd = () => { cleanup(); resolve() }
+        const onError = () => { cleanup(); reject(new Error("MediaSource append failed")) }
+        function cleanup() {
+          sourceBuffer.removeEventListener("updateend", onEnd)
+          sourceBuffer.removeEventListener("error", onError)
+        }
+        sourceBuffer.addEventListener("updateend", onEnd)
+        sourceBuffer.addEventListener("error", onError)
+        try {
+          sourceBuffer.appendBuffer(chunk)
+        } catch (error) {
+          cleanup()
+          reject(error)
+        }
+      })
+    },
+    async playSegmentBlob(video) {
+      const path = this.cameraUrl(this.segments[this.current])
+      console.log("[Galaxy:Recordings] blob playback", path, "onFirestar=" + this.onFirestar, "pipe=" + api.transportLabel(api.localTransportActive()))
+      const src = await this.mediaUrl(path, { requireLocalTransport: this.onFirestar })
+      if (this.$refs.player !== video) return
+      this.mseActive = false
+      video.src = src
+      video.load()
+      video.play().catch((e) => console.warn("[Galaxy:Recordings] play() rejected", e?.name, e?.message))
+    },
+    stopPlayback() {
+      if (this._mseReader) {
+        try { this._mseReader.cancel() } catch (error) {}
+        this._mseReader = null
+      }
+      if (this._mseSource) {
+        try { if (this._mseSource.readyState === "open") this._mseSource.endOfStream() } catch (error) {}
+        this._mseSource = null
+      }
+      if (this._mseUrl) {
+        try { URL.revokeObjectURL(this._mseUrl) } catch (error) {}
+        this._mseUrl = ""
+      }
+      this.mseActive = false
+    },
+    onPlayerError() {
+      const video = this.$refs.player
+      const err = video?.error
+      console.error("[Galaxy:Recordings] video element error", err?.code, err?.message)
+    },
+    onPlayerLoaded() {
+      const video = this.$refs.player
+      console.log("[Galaxy:Recordings] video loaded", video?.videoWidth, "x", video?.videoHeight, video?.duration + "s")
+    },
+    async downloadRoute() {
       if (!this.playerRoute) return
-      const a = document.createElement("a")
-      a.href = `/video/${this.playerRoute.name}/combined?camera=${encodeURIComponent(this.selectedCamera)}`
-      a.download = `${this.playerRoute.displayName}-${this.selectedCamera}.mp4`
-      a.click()
+      await this.downloadFile(
+        `/video/${this.playerRoute.name}/combined?camera=${encodeURIComponent(this.selectedCamera)}`,
+        `${this.playerRoute.displayName}-${this.selectedCamera}.mp4`,
+      )
+    },
+    async downloadFile(path, filename) {
+      try {
+        // cache:false keeps multi-hundred-MB downloads out of the blob cache.
+        const href = await this.mediaUrl(path, { requireLocalTransport: this.onFirestar, cache: false })
+        const a = document.createElement("a")
+        a.href = href
+        a.download = filename
+        a.click()
+        setTimeout(() => { try { URL.revokeObjectURL(href) } catch (error) {} }, 60000)
+      } catch (e) {
+        showSnackbar(e?.message || "Download failed.", "error")
+      }
+    },
+    async downloadLogsArchive(route) {
+      await this.downloadFile(`/api/routes/${encodeURIComponent(route.name)}/logs/download`, `${route.name}-logs.tar`)
+    },
+    async downloadSingleLog(seg) {
+      await this.downloadFile(seg.url, seg.filename)
     },
     closePlayer() {
       this._playRetries = 0
+      this.stopPlayback()
       if (this.$refs.player) { this.$refs.player.pause(); this.$refs.player.removeAttribute("src") }
       this.playerRoute = null
       this.playerLoading = false
@@ -310,18 +512,28 @@ export const Recordings = {
     },
     closeRecPlayer() {
       this.recPlay = null
+      this.recPlaySrc = ""
     },
-    screenUrl(filename) {
-      return this.mediaUrl(api.screenRecordingVideoUrl(filename))
-    },
-    playRec(rec) {
+    async playRec(rec) {
       this.recPlay = rec
+      this.recPlaySrc = ""
+      try {
+        if (this.onFirestar) await this.ensureLocalTransport()
+        this.recPlaySrc = await this.mediaUrl(api.screenRecordingVideoUrl(rec.filename), { requireLocalTransport: this.onFirestar })
+      } catch (e) {
+        showSnackbar(e?.message || "Could not load this recording.", "error")
+      }
     },
-    downloadRec(rec) {
-      const a = document.createElement("a")
-      a.href = this.screenUrl(rec.filename)
-      a.download = rec.filename
-      a.click()
+    async loadThumb(rec) {
+      if (!rec?.png || this.screenThumbs[rec.filename]) return
+      try {
+        this.screenThumbs[rec.filename] = await this.mediaUrl(rec.png, { requireLocalTransport: this.onFirestar, cache: false })
+      } catch (e) {
+        console.warn("[Galaxy:Recordings] thumbnail failed", rec.filename, e?.message)
+      }
+    },
+    async downloadRec(rec) {
+      await this.downloadFile(api.screenRecordingVideoUrl(rec.filename), rec.filename)
     },
     async renameRec(rec) {
       const base = rec.filename.replace(/\.mp4$/i, "")
@@ -360,28 +572,44 @@ export const Recordings = {
   },
   async mounted() {
     if (this.onFirestar) {
-      // Tunnel origin: never round-trip dashcam/screen video through the Galaxy
-      // link. If the device is reachable on the same LAN we stream it directly;
-      // otherwise we keep it hidden and explain why.
+      // Tunnel origin: the HTTPS page cannot fetch the device's plain-HTTP LAN
+      // origin (mixed content). Connect the pinned WebTransport session and
+      // route API + media requests locally over it. If the device is not
+      // reachable, fall back to the explanatory notice.
+      console.log("[Galaxy:Recordings] mounted on Firestar origin; connecting local transport")
       let lanIp = ""
       try {
         const status = await api.getDeviceStatus()
         lanIp = status?.lanIp || ""
         this.localUrl = localDeviceUrl(status?.lanIp, "/recordings")
-      } catch (e) {}
-      if (lanIp && await probeLocal(lanIp)) {
-        this.localOrigin = localHttpOrigin(lanIp)
-        this.canStream = true
+        console.log("[Galaxy:Recordings] device status lanIp=", lanIp)
+      } catch (e) {
+        console.warn("[Galaxy:Recordings] getDeviceStatus failed", e?.message)
+      }
+      try {
+        const client = await ensureSharedLocalClient()
+        console.log("[Galaxy:Recordings] ensureSharedLocalClient ->", !!client?.connected)
+        if (client?.connected) {
+          this.localTransportActive = true
+          this.streamReady = true
+          this.canStream = true
+          await this.loadRoutes()
+          return
+        }
+      } catch (e) {
+        console.error("[Galaxy:Recordings] ensureSharedLocalClient failed", e?.name, e?.message)
       }
       this.streamReady = true
-      if (this.canStream) await this.loadRoutes()
       return
     }
+    console.log("[Galaxy:Recordings] mounted on device origin; media streams directly", api.transportLabel(false))
     await this.loadRoutes()
   },
   beforeUnmount() {
     this.controller?.abort()
     this.recController?.abort()
+    this.clearThumbs()
+    this.stopPlayback()
   },
   template: `
     <div>
@@ -444,14 +672,14 @@ export const Recordings = {
         <div class="gx-section__header">
           <i class="bi bi-file-earmark-arrow-down"></i>
           <span class="gx-section__title">{{ logsData.segments?.length || 0 }} segments · {{ formatBytes(logsData.totalBytes) }}</span>
-          <a class="gx-btn gx-btn--tonal" :href="'/api/routes/' + logsRoute.name + '/logs/download'" download>Download all (.tar)</a>
+          <button type="button" class="gx-btn gx-btn--tonal" @click="downloadLogsArchive(logsRoute)">Download all (.tar)</button>
         </div>
         <div v-for="seg in logsData.segments || []" :key="seg.segmentNum" class="gx-row">
           <div class="gx-row__info">
             <span class="gx-row__label">Segment {{ seg.segmentNum }}</span>
             <span class="gx-row__desc">{{ seg.filename }} · {{ formatBytes(seg.bytes) }}</span>
           </div>
-          <a class="gx-btn gx-btn--tonal" :href="seg.url" download>Download</a>
+          <button type="button" class="gx-btn gx-btn--tonal" @click="downloadSingleLog(seg)">Download</button>
         </div>
       </div>
       </template>
@@ -467,7 +695,7 @@ export const Recordings = {
         <div v-else-if="screenError" class="gx-empty" style="color: var(--error);">{{ screenError }}</div>
         <div v-else-if="!recordings.length" class="gx-empty">No screen recordings found.</div>
         <article v-for="r in recordings" :key="r.filename" class="gx-row" style="cursor:pointer;" @click="playRec(r)">
-          <img :src="mediaUrl(r.png)" alt="" loading="lazy" style="width:84px; height:auto; border-radius:var(--radius-sm); object-fit:cover; flex:none;">
+          <img :src="screenThumbs[r.filename]" alt="" loading="lazy" style="width:84px; height:auto; border-radius:var(--radius-sm); object-fit:cover; flex:none;">
           <div class="gx-row__info">
             <span class="gx-row__label">{{ screenDisplayName(r) }}</span>
             <span class="gx-row__desc">{{ r.filename }}</span>
@@ -505,7 +733,8 @@ export const Recordings = {
                 <div v-if="playerError" class="gx-empty" style="color: var(--error);">{{ playerError }}</div>
                 <div v-else-if="playerLoading" class="gx-loading"><i class="bi bi-hourglass-split"></i> Loading video...</div>
                 <template v-else-if="segments.length">
-                  <video ref="player" class="gx-video" controls muted playsinline preload="metadata"></video>
+                  <div v-if="segmentLoading" class="gx-loading"><i class="bi bi-hourglass-split"></i> Loading segment...</div>
+                  <video ref="player" class="gx-video" controls muted playsinline preload="metadata" @error="onPlayerError" @loadeddata="onPlayerLoaded"></video>
                   <div style="display:flex; gap:8px; padding: var(--sp-3) 0 0; flex-wrap:wrap; align-items:center;">
                     <button type="button" class="gx-btn gx-btn--tonal" :disabled="current<=0" @click="current--; playSegment()"><i class="bi bi-skip-start-fill"></i></button>
                     <select class="gx-field" :value="current" @change="current = Number($event.target.value); playSegment()">
@@ -532,7 +761,7 @@ export const Recordings = {
                 <button type="button" class="gx-icon-btn" aria-label="Close player" @click="closeRecPlayer"><i class="bi bi-x-lg"></i></button>
               </div>
               <div style="padding: var(--sp-3);">
-                <video class="gx-video" controls autoplay playsinline :src="screenUrl(recPlay.filename)"></video>
+                <video class="gx-video" controls autoplay playsinline :src="recPlaySrc"></video>
                 <div style="display:flex; gap:8px; padding: var(--sp-3) 0 0; flex-wrap:wrap;">
                   <button type="button" class="gx-btn" @click="downloadRec(recPlay)"><i class="bi bi-download"></i> Download</button>
                   <button type="button" class="gx-btn gx-btn--tonal" @click="renameRec(recPlay)"><i class="bi bi-pencil"></i> Rename</button>
@@ -550,7 +779,9 @@ export const Recordings = {
       </template>
 
       <GxNotice v-else tone="info" icon="bi-satellite" title="Recordings unavailable via Galaxy">
-        Streaming dashcam and screen recordings over the Galaxy link is disabled for bandwidth reasons. They play directly over your local network instead, so your phone and the device must both be on the same Wi-Fi. Once they are, this page will load automatically — or open the device's local address here:
+        Local streaming of dashcam and screen recordings needs <strong>Chrome, Edge, or Firefox 125+</strong>. Safari cannot pin the device's self-signed WebTransport certificate. Open
+        <a v-if="galaxyUrl" :href="galaxyUrl" target="_blank" rel="noopener">The Galaxy</a><span v-else>The Galaxy</span>
+        in a supported browser on the same Wi-Fi as the device. Once connected, this page loads automatically — or open the device's local address here:
         <br />
         <a v-if="localUrl" class="gx-btn gx-btn--tonal" :href="localUrl" style="margin-top:var(--sp-3);">
           <i class="bi bi-box-arrow-up-right"></i> Open Recordings Locally

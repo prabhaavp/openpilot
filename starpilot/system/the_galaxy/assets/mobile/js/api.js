@@ -1,5 +1,149 @@
 export const LAYOUT_URL = "/assets/components/tools/device_settings_layout.json?v=settings-tier-1"
 
+let localTransport = null
+const videoBlobCache = new Map()
+const thumbBlobCache = new Map()
+
+export function setLocalTransport(transport) {
+  localTransport = transport || null
+  if (!transport) clearMediaCache()
+}
+
+export function getLocalTransport() {
+  return localTransport
+}
+
+export function localTransportActive() {
+  return !!localTransport?.connected
+}
+
+function logEnabled() {
+  try {
+    if (typeof window !== "undefined" && window.__GALAXY_WT_DEBUG === false) return false
+  } catch (e) {}
+  return true
+}
+function log(...args) {
+  if (logEnabled()) console.log("[Galaxy:API]", ...args)
+}
+
+function pageOriginLabel() {
+  try {
+    return (typeof location !== "undefined" && location.origin) || "unknown-origin"
+  } catch (error) {
+    return "unknown-origin"
+  }
+}
+
+function isIpLiteral(host) {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.startsWith("[") || host.includes(":")
+}
+
+export function isRelayOrigin() {
+  try {
+    const host = (typeof location !== "undefined" && location.hostname) || ""
+    if (!host) return false
+    if (host === "localhost" || host === "127.0.0.1" || host === "::1") return false
+    if (isIpLiteral(host) || host.endsWith(".local")) return false
+    return true
+  } catch (error) {
+    return false
+  }
+}
+
+export function localTunnelLabel() {
+  if (!localTransport?.connected) return "none"
+  return localTransport.url || "device-quic"
+}
+
+export function transportLabel(viaTunnel) {
+  if (viaTunnel) return `local device via WebTransport socket ${localTunnelLabel()}`
+  if (isRelayOrigin()) return `VPS relay origin ${pageOriginLabel()} (NOT local)`
+  return `local device direct ${pageOriginLabel()} (no socket)`
+}
+
+export function isDevicePath(path) {
+  return typeof path === "string" && path.startsWith("/")
+}
+
+export class LocalTransportUnavailableError extends Error {
+  constructor(path) {
+    super(`Refusing to stream ${path} through the Galaxy relay: the local device tunnel is not connected.`)
+    this.name = "LocalTransportUnavailableError"
+    this.code = "LOCAL_TRANSPORT_UNAVAILABLE"
+  }
+}
+
+function transportFetch(url, init) {
+  const viaTunnel = !!(localTransport?.connected && isDevicePath(url))
+  if (viaTunnel) {
+    log("transportFetch", (init?.method || "GET"), url, "->", transportLabel(true))
+    return localTransport.fetch(url, init).catch((error) => {
+      log("transportFetch failed", url, error?.name, error?.message)
+      throw error
+    })
+  }
+  log("transportFetch", (init?.method || "GET"), url, "->", transportLabel(false))
+  return fetch(url, init)
+}
+
+export async function resolveMediaUrl(path, { requireLocalTransport = false, cache = true } = {}) {
+  if (!localTransport?.connected || !isDevicePath(path)) {
+    if (requireLocalTransport && isDevicePath(path)) {
+      log("resolveMediaUrl blocked: no device socket; refusing", path, "->", transportLabel(false))
+      throw new LocalTransportUnavailableError(path)
+    }
+    log("resolveMediaUrl passthrough", path, "->", transportLabel(false))
+    return path
+  }
+  const isThumb = path.endsWith(".png") || path.includes("/thumbnails/")
+  const targetCache = isThumb ? thumbBlobCache : videoBlobCache
+  if (cache && targetCache.has(path)) {
+    log("resolveMediaUrl cache hit", path, "->", transportLabel(true))
+    return targetCache.get(path)
+  }
+  const started = (typeof performance !== "undefined" ? performance.now() : Date.now())
+  log("resolveMediaUrl start", path, "->", transportLabel(true))
+  const response = await localTransport.fetch(path, { method: "GET" })
+  log("resolveMediaUrl response", path, response.status, "type=" + response.headers.get("content-type"), "len=" + response.headers.get("content-length"))
+  if (!response.ok) throw new Error(`Media request failed (${response.status})`)
+  const blob = await response.blob()
+  const elapsed = (typeof performance !== "undefined" ? performance.now() : Date.now()) - started
+  log("resolveMediaUrl blob", path, blob.size, "bytes in", Math.round(elapsed) + "ms", "type=" + blob.type)
+  const url = URL.createObjectURL(blob)
+  if (!cache) return url
+  const maxEntries = isThumb ? 100 : 2
+  while (targetCache.size >= maxEntries) {
+    const oldest = targetCache.keys().next().value
+    try { URL.revokeObjectURL(targetCache.get(oldest)) } catch (error) {}
+    targetCache.delete(oldest)
+  }
+  targetCache.set(path, url)
+  return url
+}
+
+export function clearMediaCache() {
+  for (const cache of [videoBlobCache, thumbBlobCache]) {
+    for (const url of cache.values()) {
+      try { URL.revokeObjectURL(url) } catch (error) {}
+    }
+    cache.clear()
+  }
+}
+
+export function fetchMediaStream(path, { requireLocalTransport = false } = {}) {
+  if (localTransport?.connected && isDevicePath(path)) {
+    log("fetchMediaStream", path, "->", transportLabel(true))
+    return localTransport.fetch(path, { method: "GET" })
+  }
+  if (requireLocalTransport && isDevicePath(path)) {
+    log("fetchMediaStream blocked: no device socket; refusing", path, "->", transportLabel(false))
+    return Promise.reject(new LocalTransportUnavailableError(path))
+  }
+  log("fetchMediaStream", path, "->", transportLabel(false))
+  return fetch(path)
+}
+
 async function parse(res) {
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
@@ -25,20 +169,20 @@ function initFor({ method = "GET", data, form, headers, cache, signal } = {}) {
 }
 
 function request(url, opts) {
-  return fetch(url, initFor(opts)).then(parse)
+  return transportFetch(url, initFor(opts)).then(parse)
 }
 
 async function requestOk(url, opts) {
-  const res = await fetch(url, initFor(opts))
+  const res = await transportFetch(url, initFor(opts))
   return res.ok ? parse(res) : null
 }
 
 async function delOk(url) {
-  return (await fetch(url, { method: "DELETE" })).ok
+  return (await transportFetch(url, { method: "DELETE" })).ok
 }
 
 function postOk(url, opts = {}) {
-  return fetch(url, initFor({ ...opts, method: "POST" })).then((res) => res.ok)
+  return transportFetch(url, initFor({ ...opts, method: "POST" })).then((res) => res.ok)
 }
 
 function lanHost(ip) {
@@ -50,6 +194,7 @@ function lanHost(ip) {
 export async function probeLocal(ip, timeoutMs = 8000) {
   const host = lanHost(ip)
   if (!host) return false
+  if (typeof window !== "undefined" && window.location?.protocol === "https:") return false
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -100,27 +245,40 @@ export const api = {
   setDriveStats(action, routeNames) { return request(`/api/stats/${action}_drive`, { method: "POST", data: { routeNames } }) },
 
   async getRoutesStream({ onProgress, onRoutes, signal } = {}) {
-    const res = await fetch("/api/routes", { signal })
+    log("getRoutesStream: start")
+    const res = await transportFetch("/api/routes", { signal })
+    log("getRoutesStream: response", res.status, res.headers.get("content-type"), "body=" + !!res.body)
     if (!res.ok || !res.body) throw new Error(`Route request failed (${res.status})`)
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ""
+    let events = 0
     while (true) {
       const { value, done } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const events = buffer.split(/\r?\n\r?\n/)
-      buffer = events.pop() || ""
-      for (const event of events) {
+      if (done) {
+        log("getRoutesStream: stream done, events=" + events)
+        break
+      }
+      const text = decoder.decode(value, { stream: true })
+      buffer += text
+      log("getRoutesStream: chunk", value.length, "B", JSON.stringify(text.slice(0, 160)))
+      const chunks = buffer.split(/\r?\n\r?\n/)
+      buffer = chunks.pop() || ""
+      for (const event of chunks) {
         const lines = event.split(/\r?\n/).filter((l) => l.startsWith("data:"))
         if (!lines.length) continue
         try {
           const payload = JSON.parse(lines.map((l) => l.slice(5).trimStart()).join("\n"))
+          events += 1
+          log("getRoutesStream: event", events, "progress=" + payload.progress, "routes=" + (payload.routes?.length ?? 0))
           if (Number.isFinite(payload.progress)) onProgress?.(payload.progress)
           onRoutes?.(Array.isArray(payload.routes) ? payload.routes : [])
-        } catch (e) {  }
+        } catch (e) {
+          log("getRoutesStream: bad event", e?.message, JSON.stringify(event.slice(0, 160)))
+        }
       }
     }
+    log("getRoutesStream: finished")
   },
 
   getRoute(name) { return request(`/api/routes/${encodeURIComponent(name)}`) },
@@ -132,25 +290,34 @@ export const api = {
   getRouteLogs(name) { return request(`/api/routes/${encodeURIComponent(name)}/logs`) },
 
   async screenRecordingsStream({ onProgress, onRecordings, signal } = {}) {
-    const res = await fetch("/api/screen_recordings/list", { signal })
+    log("screenRecordingsStream: start")
+    const res = await transportFetch("/api/screen_recordings/list", { signal })
+    log("screenRecordingsStream: response", res.status, res.headers.get("content-type"), "body=" + !!res.body)
     if (!res.ok || !res.body) throw new Error(`Screen recordings request failed (${res.status})`)
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ""
+    let events = 0
     while (true) {
       const { value, done } = await reader.read()
-      if (done) break
+      if (done) {
+        log("screenRecordingsStream: stream done, events=" + events)
+        break
+      }
       buffer += decoder.decode(value, { stream: true })
-      const events = buffer.split(/\r?\n\r?\n/)
-      buffer = events.pop() || ""
-      for (const event of events) {
+      const chunks = buffer.split(/\r?\n\r?\n/)
+      buffer = chunks.pop() || ""
+      for (const event of chunks) {
         const lines = event.split(/\r?\n/).filter((l) => l.startsWith("data:"))
         if (!lines.length) continue
         try {
           const payload = JSON.parse(lines.map((l) => l.slice(5).trimStart()).join("\n"))
+          events += 1
           if (Number.isFinite(payload.progress)) onProgress?.(payload.progress)
           onRecordings?.(Array.isArray(payload.recordings) ? payload.recordings : [])
-        } catch (e) {  }
+        } catch (e) {
+          log("screenRecordingsStream: bad event", e?.message)
+        }
       }
     }
   },
@@ -241,6 +408,17 @@ export const api = {
   pipSnapshot() { return requestOk("/api/pip_preview/snapshot", { cache: "no-store" }) },
 
   getGalaxyStatus() { return requestOk("/api/galaxy/status") },
+  getWebTransportStatus() { return requestOk("/api/webtransport/status", { cache: "no-store" }) },
+  restartWebTransport() { return request("/api/webtransport/restart", { method: "POST" }) },
+  setLocalTransport,
+  getLocalTransport,
+  localTransportActive,
+  isRelayOrigin,
+  transportLabel,
+  localTunnelLabel,
+  resolveMediaUrl,
+  clearMediaCache,
+  fetchMediaStream,
   getSpeedLimitsStatus() { return request("/api/speed_limits/status") },
   processSpeedLimits() { return request("/api/speed_limits/process", { method: "POST" }) },
 

@@ -826,6 +826,73 @@ def ffmpeg_stream_concatenated_mp4(input_files, chunk_size=256 * 1024):
     except OSError:
       pass
 
+def ffmpeg_stream_segment_mp4(filename, chunk_size=256 * 1024):
+  """Stream one camera segment as a fragmented MP4 for progressive playback.
+  """
+  input_path = Path(filename)
+  if not input_path.exists():
+    raise FileNotFoundError(f"Input file does not exist: {input_path}")
+  if input_path.stat().st_size == 0:
+    raise ValueError(f"Input file is empty: {input_path}")
+
+  lock_file = input_path.parent / "rlog.lock"
+  if lock_file.exists():
+    raise ValueError(f"File is still being recorded: {input_path}")
+
+  process = subprocess.Popen(
+    [FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-i", str(input_path),
+     "-c", "copy", "-tag:v", "hvc1",
+     "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+     "-f", "mp4", "pipe:1"],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.DEVNULL,
+  )
+  chunks = queue.Queue(maxsize=4)
+  deadline = time.monotonic() + max(VIDEO_STREAM_TIMEOUT_SECONDS, 30.0)
+
+  def read_stdout():
+    try:
+      while True:
+        chunk = process.stdout.read(chunk_size)
+        if not chunk:
+          chunks.put(("eof", None))
+          return
+        chunks.put(("data", chunk))
+    except Exception as error:
+      chunks.put(("error", error))
+
+  reader_thread = threading.Thread(target=read_stdout, name="segment-video-reader", daemon=True)
+  reader_thread.start()
+  try:
+    while True:
+      remaining = deadline - time.monotonic()
+      if remaining <= 0:
+        raise TimeoutError("Timed out streaming the segment video")
+      try:
+        kind, value = chunks.get(timeout=remaining)
+      except queue.Empty as error:
+        raise TimeoutError("Timed out streaming the segment video") from error
+      if kind == "data":
+        yield value
+      elif kind == "error":
+        raise ValueError("Could not read the segment video") from value
+      else:
+        if process.wait(timeout=max(0.1, remaining)) != 0:
+          raise ValueError("Could not stream the segment video")
+        break
+  finally:
+    if process.stdout is not None:
+      process.stdout.close()
+    if process.poll() is None:
+      process.terminate()
+      try:
+        process.wait(timeout=2)
+      except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+    reader_thread.join(timeout=1)
+
+
 def ffmpeg_mp4_wrap_to_path(filename):
   """Remux one raw .hevc segment to mp4 and return the cache path.
 
