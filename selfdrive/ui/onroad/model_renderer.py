@@ -70,6 +70,11 @@ class ModelRenderer(Widget):
     self._road_edge_stds = np.zeros(2, dtype=np.float32)
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
     self._adjacent_lead_vehicles = [LeadVehicle(), LeadVehicle()]
+    self._prev_path = None
+    self._prev_lane_lines = [None] * 4
+    self._prev_road_edges = [None] * 2
+    self._prev_lead_alphas = [0.0, 0.0]
+    self._prev_adjacent_lead_alphas = [0.0, 0.0]
     self._path_offset_z = HEIGHT_INIT[0]
 
     # Adjacent path vertices (left, right)
@@ -210,6 +215,28 @@ class ModelRenderer(Widget):
     self._road_edge_stds = np.ones(len(self._road_edges), dtype=np.float32)
     self._road_edge_stds[:min(len(self._road_edges), len(road_edge_stds))] = road_edge_stds[:len(self._road_edges)]
     self._acceleration_x = np.array(model.acceleration.x, dtype=np.float32)
+
+    self._apply_smoothing()
+
+  def _apply_smoothing(self):
+    smoothing_alpha = self._params.get_float("PathSmoothingFactor", default=0.0) / 100.0
+    if smoothing_alpha <= 0.0:
+      self._prev_path = None
+      self._prev_lane_lines = [None] * 4
+      self._prev_road_edges = [None] * 2
+      return
+    alpha = smoothing_alpha
+    if self._prev_path is not None and self._path.raw_points.shape == self._prev_path.shape:
+      self._path.raw_points = alpha * self._prev_path + (1.0 - alpha) * self._path.raw_points
+    self._prev_path = self._path.raw_points.copy()
+    for i in range(len(self._lane_lines)):
+      if self._prev_lane_lines[i] is not None and self._lane_lines[i].raw_points.shape == self._prev_lane_lines[i].shape:
+        self._lane_lines[i].raw_points = alpha * self._prev_lane_lines[i] + (1.0 - alpha) * self._lane_lines[i].raw_points
+      self._prev_lane_lines[i] = self._lane_lines[i].raw_points.copy()
+    for i in range(len(self._road_edges)):
+      if self._prev_road_edges[i] is not None and self._road_edges[i].raw_points.shape == self._prev_road_edges[i].shape:
+        self._road_edges[i].raw_points = alpha * self._prev_road_edges[i] + (1.0 - alpha) * self._road_edges[i].raw_points
+      self._prev_road_edges[i] = self._road_edges[i].raw_points.copy()
 
   def _update_leads(self, radar_state, path_x_array):
     """Update positions of lead vehicles"""
@@ -430,6 +457,10 @@ class ModelRenderer(Widget):
     if not self._path.projected_points.size:
       return
 
+    if self._params.get_bool("MinPathSpeed"):
+      if ui_state.sm["carState"].vEgo * CV.MS_TO_MPH < 2.0:
+        return
+
     allow_throttle = sm['longitudinalPlan'].allowThrottle or not self._longitudinal_control
     self._blend_filter.update(int(allow_throttle))
 
@@ -483,6 +514,11 @@ class ModelRenderer(Widget):
       threshold = 50
     prob_threshold = threshold / 100.0 if threshold > 1.0 else threshold
 
+    if self._params.get_bool("MinPathSpeed"):
+      if ui_state.sm["carState"].vEgo * CV.MS_TO_MPH < 2.0:
+        return
+
+    lead_smoothing = self._params.get_float("PathSmoothingFactor", default=0.0) / 100.0
     for i, lead in enumerate(self._lead_vehicles):
       if not lead.glow or not lead.chevron:
         continue
@@ -496,8 +532,14 @@ class ModelRenderer(Widget):
       else:
         color = lead_color
 
+      if lead_smoothing > 0.0:
+        self._prev_lead_alphas[i] = lead_smoothing * self._prev_lead_alphas[i] + (1.0 - lead_smoothing) * lead.fill_alpha
+        smoothed_alpha = int(round(self._prev_lead_alphas[i]))
+      else:
+        self._prev_lead_alphas[i] = float(lead.fill_alpha)
+        smoothed_alpha = lead.fill_alpha
       rl.draw_triangle_fan(lead.glow, len(lead.glow), rl.Color(218, 202, 37, 255))
-      rl.draw_triangle_fan(lead.chevron, len(lead.chevron), with_alpha(color, lead.fill_alpha))
+      rl.draw_triangle_fan(lead.chevron, len(lead.chevron), with_alpha(color, smoothed_alpha))
 
       # Draw metrics if enabled
       if self._lead_info_enabled and i < len(leads) and leads[i] and leads[i].status:
@@ -535,13 +577,24 @@ class ModelRenderer(Widget):
     if lead_right and lead_right.status:
       leads_to_draw.append((1, lead_right, purple_color))
 
+    if self._params.get_bool("MinPathSpeed"):
+      if ui_state.sm["carState"].vEgo * CV.MS_TO_MPH < 2.0:
+        return
+
+    lead_smoothing = self._params.get_float("PathSmoothingFactor", default=0.0) / 100.0
     for idx, lead_data, color in leads_to_draw:
       lead = self._adjacent_lead_vehicles[idx]
       if not lead.glow or not lead.chevron:
         continue
 
+      if lead_smoothing > 0.0:
+        self._prev_adjacent_lead_alphas[idx] = lead_smoothing * self._prev_adjacent_lead_alphas[idx] + (1.0 - lead_smoothing) * lead.fill_alpha
+        smoothed_alpha = int(round(self._prev_adjacent_lead_alphas[idx]))
+      else:
+        self._prev_adjacent_lead_alphas[idx] = float(lead.fill_alpha)
+        smoothed_alpha = lead.fill_alpha
       rl.draw_triangle_fan(lead.glow, len(lead.glow), rl.Color(218, 202, 37, 255))
-      rl.draw_triangle_fan(lead.chevron, len(lead.chevron), with_alpha(color, lead.fill_alpha))
+      rl.draw_triangle_fan(lead.chevron, len(lead.chevron), with_alpha(color, smoothed_alpha))
 
       # Draw metrics if enabled
       if self._lead_info_enabled:
