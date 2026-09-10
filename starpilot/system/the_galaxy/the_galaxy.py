@@ -169,7 +169,7 @@ from openpilot.starpilot.common.testing_grounds import (
 )
 from openpilot.starpilot.navigation.destination_store import normalize_destination_payload, update_recent_destinations
 from openpilot.starpilot.system.the_galaxy.factory_reset import remove_path as _run_factory_reset_delete
-from openpilot.starpilot.system.the_galaxy import flm_workspace, utilities
+from openpilot.starpilot.system.the_galaxy import flm_workspace, utilities, webtransport
 from openpilot.starpilot.system.the_galaxy.update_recovery import inspect_interrupted_update, public_recovery_status, recover_interrupted_update
 from openpilot.starpilot.system.bluetooth import BluetoothClient
 from openpilot.starpilot.system.wheel_controls import (
@@ -930,6 +930,238 @@ def _get_live_driver_jpeg():
   finally:
     if started:
       managed_processes['camerad'].stop()
+
+
+# ── WebTransport HTTP tunnel (HTTP/3 + certificate pinning) ───────────────
+_WEBTRANSPORT_SERVER_LOCK = threading.Lock()
+_WEBTRANSPORT_SERVER = None
+_WEBTRANSPORT_PORT = int(os.getenv("SP_GALAXY_WEBTRANSPORT_PORT", "4433"))
+_WEBTRANSPORT_HOP_HEADERS = {
+  "host", "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+  "te", "trailer", "transfer-encoding", "upgrade",
+}
+_GALAXY_FLASK_APP = None
+
+
+def _handle_webtransport_request(method, path, headers, body):
+  """Serve a local HTTP request over a WebTransport stream.
+
+  The HTTPS Galaxy page cannot fetch the device's plain-HTTP LAN origin
+  (mixed active content), so paired clients tunnel their API and media
+  requests through the pinned WebTransport session instead.
+  """
+  app = _GALAXY_FLASK_APP
+  if app is None:
+    return 503, {"content-type": "text/plain"}, b"Galaxy app unavailable"
+
+  path = str(path or "/")
+  if not path.startswith("/") or "://" in path:
+    return 400, {"content-type": "text/plain"}, b"invalid path"
+
+  method = str(method or "GET").upper()
+  if method not in {"GET", "HEAD", "POST", "PUT", "DELETE", "PATCH"}:
+    return 405, {"content-type": "text/plain"}, b"method not allowed"
+
+  request_headers = {}
+  for key, value in (headers or {}).items():
+    key = str(key)
+    if key.lower() in _WEBTRANSPORT_HOP_HEADERS:
+      continue
+    request_headers[key] = str(value)
+
+  client = app.test_client()
+  # Preserve the request context across the response lifetime; streaming
+  # responses are iterated lazily after this function returns.
+  try:
+    client.__enter__()
+  except Exception:
+    pass
+  try:
+    response = client.open(path, method=method, headers=request_headers, data=body or None)
+    response_headers = {
+      key: value for key, value in response.headers.items()
+      if key.lower() not in _WEBTRANSPORT_HOP_HEADERS
+    }
+
+    # Streaming responses (Server-Sent Events such as /api/routes) must be
+    # forwarded chunk-by-chunk. Buffering them here with get_data() would hold
+    # the whole scan in memory and the browser would stay at 0% until it ends.
+    if response.is_streamed:
+      def stream_payload():
+        try:
+          for chunk in response.iter_encoded():
+            if chunk:
+              yield bytes(chunk)
+        finally:
+          try:
+            client.__exit__(None, None, None)
+          except Exception:
+            pass
+
+      return response.status_code, response_headers, stream_payload()
+
+    payload = response.get_data()
+    client.__exit__(None, None, None)
+    return response.status_code, response_headers, payload
+  except Exception as error:
+    try:
+      client.__exit__(None, None, None)
+    except Exception:
+      pass
+    cloudlog.exception("Galaxy: WebTransport HTTP proxy failed for %s %s", method, path)
+    return 500, {"content-type": "text/plain"}, f"{type(error).__name__}: {error}".encode("utf-8")
+
+
+def _webtransport_enabled() -> bool:
+  env = os.getenv("SP_GALAXY_WEBTRANSPORT")
+  if env is not None:
+    return env.strip().lower() in {"1", "true", "yes", "on"}
+  try:
+    return bool(params.get_bool("GalaxyWebTransportEnabled"))
+  except Exception:
+    return False
+
+
+def _webtransport_lan_ips() -> list[str]:
+  ips = []
+  try:
+    current = utilities.get_current_lan_ip()
+    if current:
+      ips.append(current)
+  except Exception:
+    pass
+  return ips
+
+
+def _webtransport_certificate_info(force: bool = False) -> dict:
+  return webtransport.ensure_server_certificate(
+    _get_galaxy_dir(),
+    hostnames=["galaxy.local"],
+    ips=_webtransport_lan_ips(),
+    force=force,
+  )
+
+
+def _get_webtransport_server():
+  return _WEBTRANSPORT_SERVER
+
+
+def _ensure_webtransport_server(force: bool = False):
+  global _WEBTRANSPORT_SERVER
+  enabled = _webtransport_enabled()
+  if not enabled and not force:
+    return _WEBTRANSPORT_SERVER
+  with _WEBTRANSPORT_SERVER_LOCK:
+    if _WEBTRANSPORT_SERVER is not None and _WEBTRANSPORT_SERVER.running:
+      return _WEBTRANSPORT_SERVER
+    if not webtransport.is_available():
+      cloudlog.warning("Galaxy: WebTransport server requested but aioquic is unavailable: %s", webtransport.import_error())
+      return _WEBTRANSPORT_SERVER
+
+    try:
+      server = webtransport.WebTransportServer(
+        _get_galaxy_dir(),
+        host="0.0.0.0",
+        port=_WEBTRANSPORT_PORT,
+        hostnames=["galaxy.local"],
+        ips=_webtransport_lan_ips(),
+        http_handler=_handle_webtransport_request,
+      )
+      server.start()
+      _WEBTRANSPORT_SERVER = server
+    except Exception:
+      cloudlog.exception("Galaxy: WebTransport server failed to start")
+      _WEBTRANSPORT_SERVER = None
+    return _WEBTRANSPORT_SERVER
+
+
+def _stop_webtransport_server() -> None:
+  global _WEBTRANSPORT_SERVER
+  with _WEBTRANSPORT_SERVER_LOCK:
+    if _WEBTRANSPORT_SERVER is not None:
+      try:
+        _WEBTRANSPORT_SERVER.stop()
+      except Exception:
+        cloudlog.exception("Galaxy: WebTransport server stop failed")
+      _WEBTRANSPORT_SERVER = None
+
+
+def _webtransport_status_payload() -> dict:
+  lan_ip = ""
+  try:
+    lan_ip = utilities.get_current_lan_ip() or ""
+  except Exception:
+    lan_ip = ""
+
+  try:
+    available = webtransport.is_available()
+  except Exception:
+    available = False
+
+  import_error = ""
+  try:
+    import_error = webtransport.import_error() or ""
+  except Exception:
+    import_error = ""
+
+  server = None
+  try:
+    server = _get_webtransport_server()
+  except Exception:
+    server = None
+
+  if server is not None:
+    try:
+      payload = server.status(lan_ip)
+    except Exception as error:
+      payload = {"available": available, "running": False, "error": f"{type(error).__name__}: {error}"}
+  else:
+    payload = {
+      "available": available,
+      "running": False,
+      "port": _WEBTRANSPORT_PORT,
+      "host": "0.0.0.0",
+      "url": f"https://{lan_ip}:{_WEBTRANSPORT_PORT}/" if lan_ip else "",
+      "lanIp": lan_ip,
+      "fingerprint": "",
+      "spkiFingerprint": "",
+      "notBefore": "",
+      "notAfter": "",
+      "certificateHashes": [],
+      "error": None if available else (import_error or "aioquic is not installed"),
+    }
+    try:
+      info = _webtransport_certificate_info()
+      fingerprint = info.get("fingerprint", "")
+      payload.update({
+        "fingerprint": fingerprint,
+        "spkiFingerprint": info.get("spkiFingerprint", ""),
+        "notBefore": info.get("notBefore", ""),
+        "notAfter": info.get("notAfter", ""),
+        "certificateHashes": webtransport.certificate_hashes(fingerprint) if fingerprint else [],
+      })
+    except Exception as error:
+      payload["error"] = f"{payload.get('error') or ''} certificate: {type(error).__name__}: {error}".strip()
+
+  payload.setdefault("importError", import_error)
+  try:
+    payload.update(webtransport.runtime_info())
+  except Exception:
+    pass
+  try:
+    payload["enabled"] = _webtransport_enabled()
+  except Exception:
+    payload["enabled"] = False
+  payload["secureContextRequired"] = True
+  if not payload.get("available"):
+    payload["hint"] = import_error or "Install the aioquic package to enable WebTransport streaming."
+  elif not payload.get("enabled"):
+    payload["hint"] = "Enable GalaxyWebTransportEnabled to start the HTTP/3 server."
+  elif not payload.get("running"):
+    payload["hint"] = payload.get("error") or "The WebTransport server is starting."
+  else:
+    payload["hint"] = "Load Galaxy over HTTPS and connect with the pinned certificate hash."
+  return payload
 
 
 _SENTRY_PUSH_LOCK = threading.Lock()
@@ -5170,6 +5402,8 @@ class GalaxySlugMiddleware:
 
 
 def setup(app):
+  global _GALAXY_FLASK_APP
+  _GALAXY_FLASK_APP = app
   if not isinstance(app.wsgi_app, GalaxySlugMiddleware):
     app.wsgi_app = GalaxySlugMiddleware(app.wsgi_app)
 
@@ -8103,6 +8337,56 @@ def setup(app):
       "networkName": utilities.get_current_network_name(),
     }), 200
 
+  @app.route("/api/webtransport/status", methods=["GET"])
+  def webtransport_status():
+    try:
+      payload = _webtransport_status_payload()
+    except Exception as error:
+      cloudlog.exception("Galaxy: webtransport status failed")
+      payload = {
+        "available": False,
+        "enabled": False,
+        "running": False,
+        "port": _WEBTRANSPORT_PORT,
+        "url": "",
+        "lanIp": "",
+        "fingerprint": "",
+        "certificateHashes": [],
+        "secureContextRequired": True,
+        "error": f"{type(error).__name__}: {error}",
+        "hint": f"{type(error).__name__}: {error}",
+      }
+    response = make_response(jsonify(payload))
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return response
+
+  @app.route("/api/webtransport/certificate", methods=["GET"])
+  def webtransport_certificate():
+    try:
+      info = _webtransport_certificate_info()
+    except Exception as error:
+      return jsonify({"error": str(error)}), 500
+    return send_file(info["certPath"], mimetype="application/x-pem-file", max_age=0)
+
+  @app.route("/api/webtransport/restart", methods=["POST"])
+  def webtransport_restart():
+    try:
+      params.put_bool("GalaxyWebTransportEnabled", True)
+    except Exception:
+      cloudlog.exception("Galaxy: could not persist GalaxyWebTransportEnabled")
+    try:
+      _stop_webtransport_server()
+      server = _ensure_webtransport_server(force=True)
+      payload = _webtransport_status_payload()
+      if server is None and not webtransport.is_available():
+        return jsonify(payload), 503
+      return jsonify(payload), 200
+    except Exception as error:
+      cloudlog.exception("Galaxy: WebTransport restart failed")
+      payload = _webtransport_status_payload()
+      payload["error"] = f"{type(error).__name__}: {error}"
+      return jsonify(payload), 500
+
   @app.route("/api/stats/ignore_drive", methods=["POST"])
   def ignore_drive_stats():
     request_data = request.get_json() or {}
@@ -10362,6 +10646,12 @@ def setup(app):
     for footage_path in FOOTAGE_PATHS:
       filepath = os.path.join(footage_path, path, filename)
       if os.path.exists(filepath):
+        if request.args.get("stream") == "1":
+          response = Response(utilities.ffmpeg_stream_segment_mp4(filepath), mimetype="video/mp4")
+          response.headers["Cache-Control"] = "no-store"
+          response.headers["X-Accel-Buffering"] = "no"
+          return response
+
         try:
           cache_path = _get_or_create_segment_mp4(filepath)
         except (FileNotFoundError, ValueError) as error:
@@ -10397,8 +10687,16 @@ def main():
   if debug:
     print("\"The Galaxy\" is not running on a comma device, enabling debug mode")
 
+  if _webtransport_enabled() and webtransport.is_available():
+    server = _ensure_webtransport_server()
+    if server is not None and server.running:
+      print(f"\"The Galaxy\" WebTransport listening on UDP {_WEBTRANSPORT_PORT} (pin {server.fingerprint[:16]}...)")
+
   app.secret_key = secrets.token_hex(32)
-  app.run(host=host, port=port, debug=debug, use_reloader=use_reloader, threaded=True)
+  try:
+    app.run(host=host, port=port, debug=debug, use_reloader=use_reloader, threaded=True)
+  finally:
+    _stop_webtransport_server()
 
 if __name__ == "__main__":
   main()

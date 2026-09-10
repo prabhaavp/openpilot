@@ -534,7 +534,8 @@ def test_ui_mobile_polish_regressions():
 
   recordings = _read("js/views/Recordings.js")
   galaxy = _read("js/views/Galaxy.js")
-  assert "bandwidth reasons" in recordings and "status?.lanIp" in recordings
+  assert "Firefox 125+" in recordings and "status?.lanIp" in recordings
+  assert "The Galaxy" in recordings
   assert "status?.lanIp" in galaxy
   assert ':href="localUrl"' in recordings and ':href="localUrl"' in galaxy
   assert 'localDeviceUrl(status?.lanIp, "/recordings")' in recordings

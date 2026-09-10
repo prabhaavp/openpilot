@@ -37,6 +37,7 @@ compiledmodels/
 *.os-*
 *.so
 *.a
+!starpilot/third_party/webtransport/**/*.so
 *.clb
 *.class
 *.pyxbldc
