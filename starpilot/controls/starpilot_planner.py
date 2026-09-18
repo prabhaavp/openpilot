@@ -215,6 +215,10 @@ class StarPilotPlanner:
 
     self.road_curvature, self.time_to_curve = calculate_road_curvature(sm["modelV2"], v_ego)
     self.curve_profile = extract_curve_profile(sm["modelV2"])
+    # Publish the MapD reader for the Curve Speed Controller's extended lookahead.
+    # Kept as an attribute so the CSC update stays a plain (v_ego, v_cruise) call.
+    self.mapd_out = sm["mapdOut"] if getattr(sm, "valid", {}).get("mapdOut", False) else None
+    self.csc_brake_lead = getattr(starpilot_toggles, "csc_brake_lead", None)
 
     self.road_curvature_detected = (1 / abs(self.road_curvature))**0.5 < v_ego > CRUISING_SPEED and not (sm["carState"].leftBlinker or sm["carState"].rightBlinker)
 

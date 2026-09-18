@@ -256,6 +256,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ConditionalExperimental", {PERSISTENT, BOOL, "1", "0", 1, SETTINGS_SIMPLE}},
     {"CurvatureData", {PERSISTENT | DONT_LOG, JSON, "{}", "{}"}},
     {"CurveSpeedController", {PERSISTENT, BOOL, "1", "0", 1, SETTINGS_SIMPLE}},
+    {"CurveSpeedControllerBrakeLead", {PERSISTENT, FLOAT, "1.2", "1.2", 0}},
     {"CurveSpeedControllerNoLead", {PERSISTENT, BOOL, "0", "0", 1, SETTINGS_SIMPLE}},
     {"CustomAlerts", {PERSISTENT, BOOL, "0", "0", 0, SETTINGS_SIMPLE}},
     {"CustomAccelProfile", {PERSISTENT, BOOL, "0", "0", 3}},

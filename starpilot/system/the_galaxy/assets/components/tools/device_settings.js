@@ -220,6 +220,7 @@ function matchesSettingValueCondition(param) {
 }
 
 function isSettingVisible(section, param) {
+  if (param.mobile_only) return false
   if (param.longitudinal_mode && param.longitudinal_mode !== state.longitudinalMode?.mode) return false
   if (PROFILE_HIDDEN_LAYOUT_KEYS.has(param.key) || HIDDEN_SETTING_KEYS.has(param.key) ||
       !isVehicleSettingVisible(section, param) || !matchesSettingValueCondition(param)) return false
@@ -2890,7 +2891,11 @@ export function DeviceSettings({ params }) {
         return html`<div class="ds-empty">No settings available.</div>`
       }
 
-      const hiddenAdvancedCount = countAdvancedHiddenByDeveloperMode(state.layout, state.values)
+      const classicLayout = state.layout.map(section => ({
+        ...section,
+        params: (section.params || []).filter(param => !param.mobile_only),
+      }))
+      const hiddenAdvancedCount = countAdvancedHiddenByDeveloperMode(classicLayout, state.values)
 
       // Sync DOM inputs after ArrowJS renders (safe: syncScheduled is non-reactive)
       scheduleSyncInputs()
