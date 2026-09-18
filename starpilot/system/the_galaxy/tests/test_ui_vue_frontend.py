@@ -502,8 +502,8 @@ def test_ui_all_remaining_classic_tools_native_no_embed():
   assert "GalaxyEmbed" not in tuning and "LateralTuningPanel" in tuning
   assert _read("js/components/MapsPanel.js") and _read("js/components/NavigationKeysPanel.js")
   destination = _read("js/components/NavigationDestinationPanel.js")
-  assert '"./views/Navigation.js?v=nav-destination-4"' in _read("js/app.js")
-  assert '"../components/NavigationDestinationPanel.js?v=nav-destination-4"' in _read("js/views/Navigation.js")
+  assert '"./views/Navigation.js?v=nav-destination-5"' in _read("js/app.js")
+  assert '"../components/NavigationDestinationPanel.js?v=nav-destination-5"' in _read("js/views/Navigation.js")
   assert "mapboxSuggest" in destination and "mapboxRetrieve" in destination
   assert "mapboxGeocode" in destination and "mapboxDirections" in destination
   assert "ref=\"map\"" in destination and "setNavigation(this.destination)" in destination
@@ -618,6 +618,7 @@ def test_ui_mobile_polish_regressions():
   assert 'localDeviceUrl(status?.lanIp, "/recordings")' in recordings
   assert 'localDeviceUrl(status?.lanIp, "/galaxy")' in galaxy
   assert "gx-btn gx-btn--tonal" in recordings and "Open Recordings Locally" in recordings
+  assert "screenDisplayName(rec) {\n      if (!rec) return" in recordings
   assert "gx-btn gx-btn--tonal" in galaxy and "Open Galaxy Locally" in galaxy
 
   home = _read("js/views/Home.js")
@@ -856,3 +857,23 @@ console.log("hierarchy logic OK")
 
   result = subprocess.run([node, str(script)], capture_output=True, text=True)
   assert result.returncode == 0, f"node failed:\n{result.stdout}\n{result.stderr}"
+
+
+def test_ui_navigation_map_first_layout_regressions():
+  nav = _read("js/views/Navigation.js")
+  css = _read("css/material.css")
+  destination = _read("js/components/NavigationDestinationPanel.js")
+
+  # Destination tab is a map-first screen: the map fills the content area and
+  # the tab switcher floats above the bottom nav instead of stacking chrome.
+  assert 'class="gx-navigation-view"' in nav and "gx-navigation-tabs" in nav
+  assert ".gx-content:has(.gx-navigation-view)" in css
+  assert "--bottomnav-clearance:" in css
+  assert ".gx-navigation-tabs {" in css
+  assert "bottom: var(--bottomnav-clearance)" in css
+  assert "padding-bottom: calc(var(--bottomnav-clearance) + 56px)" in css
+
+  # Route metrics use Bootstrap Icons consistently, not emoji.
+  assert "bi-signpost-2" in destination and "bi-clock-history" in destination
+  for emoji in ("🛣️", "⌛", "🕗"):
+    assert emoji not in destination

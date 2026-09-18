@@ -98,6 +98,7 @@
 
   --appbar-height: 64px;
   --bottomnav-height: 72px;
+  --bottomnav-clearance: calc(var(--bottomnav-height) + env(safe-area-inset-bottom, 0px) + var(--sp-5));
   --touch-target: 44px;
   --z-appbar: 100;
   --z-drawer: 200;
@@ -1387,17 +1388,33 @@ button.gx-chip:hover {
   }
 }
 
+.gx-content:has(.gx-navigation-view) {
+  padding: 0;
+}
+
+.gx-navigation-view {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  position: relative;
+  width: 100%;
+}
+
 .gx-navigation-stage {
   background: var(--surface-container-low);
-  min-height: calc(100dvh - var(--appbar-height));
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
   position: relative;
   width: 100%;
 }
 
 .gx-navigation-map {
-  height: calc(100dvh - var(--appbar-height));
-  min-height: 520px;
+  height: 100%;
+  inset: 0;
+  min-height: 0;
+  position: absolute;
   width: 100%;
 }
 
@@ -1422,6 +1439,8 @@ button.gx-chip:hover {
 
 .gx-navigation-overlay {
   inset: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: var(--sp-4);
   pointer-events: none;
   position: absolute;
@@ -1429,6 +1448,19 @@ button.gx-chip:hover {
 }
 
 .gx-navigation-overlay > * {
+  pointer-events: auto;
+}
+
+.gx-navigation-tabs {
+  pointer-events: none;
+  position: absolute;
+  right: var(--sp-4);
+  top: var(--sp-4);
+  z-index: 3;
+}
+
+.gx-navigation-tabs .gx-tabs {
+  margin-bottom: 0;
   pointer-events: auto;
 }
 
@@ -1562,8 +1594,16 @@ button.gx-chip:hover {
 }
 
 .gx-navigation-summary__icon {
+  align-items: center;
+  color: var(--primary);
+  display: inline-flex;
   font-size: 1.15rem;
-  text-align: center;
+  justify-content: center;
+}
+
+.gx-navigation-summary__icon i {
+  height: 1em;
+  width: 1em;
 }
 
 .gx-navigation-route-picker {
@@ -1658,7 +1698,7 @@ button.gx-chip:hover {
   gap: var(--sp-3);
   justify-content: center;
   margin: 0;
-  min-height: calc(100dvh - var(--appbar-height));
+  min-height: 100%;
   padding: var(--sp-6);
   text-align: center;
 }
@@ -1671,7 +1711,31 @@ button.gx-chip:hover {
 @media (max-width: 767px) {
   .gx-navigation-overlay {
     padding: var(--sp-3);
+    padding-bottom: calc(var(--bottomnav-clearance) + 56px);
   }
+
+  /* Keep the tab switcher floating just above the bottom nav instead of
+     anchoring it to the old appbar height, which was hidden behind the nav
+     on phones with a top safe-area inset. */
+  .gx-navigation-tabs {
+    bottom: var(--bottomnav-clearance);
+    display: flex;
+    justify-content: center;
+    left: var(--sp-3);
+    right: var(--sp-3);
+    top: auto;
+  }
+
+  .gx-navigation-tabs .gx-tabs {
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    max-width: 100%;
+    overflow-x: auto;
+    padding: 2px;
+    scrollbar-width: none;
+  }
+
+  .gx-navigation-tabs .gx-tabs::-webkit-scrollbar { display: none; }
 
   .gx-navigation-summary__rows > div {
     grid-template-columns: 28px 82px 1fr;

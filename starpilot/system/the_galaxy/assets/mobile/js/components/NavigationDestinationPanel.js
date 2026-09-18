@@ -449,9 +449,9 @@ export const NavigationDestinationPanel = {
         <section v-if="destination" class="gx-navigation-summary gx-card">
           <div class="gx-navigation-summary__title">{{ destination.name || query || 'Destination' }}</div>
           <div v-if="routeSummary" class="gx-navigation-summary__rows">
-            <div><span class="gx-navigation-summary__icon">🛣️</span><span>Distance:</span><strong>{{ formatDistance(routeSummary.distance) }}</strong></div>
-            <div><span class="gx-navigation-summary__icon">⌛</span><span>Duration:</span><strong>{{ formatDuration(routeSummary.duration) }}</strong></div>
-            <div><span class="gx-navigation-summary__icon">🕗</span><span>ETA:</span><strong>{{ formatEta(routeSummary.duration) }}</strong></div>
+            <div><span class="gx-navigation-summary__icon"><i class="bi bi-signpost-2" aria-hidden="true"></i></span><span>Distance:</span><strong>{{ formatDistance(routeSummary.distance) }}</strong></div>
+            <div><span class="gx-navigation-summary__icon"><i class="bi bi-clock" aria-hidden="true"></i></span><span>Duration:</span><strong>{{ formatDuration(routeSummary.duration) }}</strong></div>
+            <div><span class="gx-navigation-summary__icon"><i class="bi bi-clock-history" aria-hidden="true"></i></span><span>ETA:</span><strong>{{ formatEta(routeSummary.duration) }}</strong></div>
           </div>
           <div v-if="routes.length > 1" class="gx-navigation-route-picker" aria-label="Choose a route">
             <div class="gx-navigation-route-picker__title">Routes</div>
