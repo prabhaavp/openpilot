@@ -214,6 +214,19 @@ def test_curve_speed_controller_no_lead_toggle_is_nested_under_csc():
   assert _declared_default("CurveSpeedControllerNoLead") == "0"
 
 
+def test_curve_speed_controller_brake_lead_is_advanced_and_galaxy_only():
+  csc = _params_by_section(_layout())["Longitudinal (Speed & Following)"]["CurveSpeedControllerBrakeLead"]
+
+  assert csc["parent_key"] == "CurveSpeedController"
+  assert csc["settings_tier"] == "advanced"
+  assert csc["galaxy_only"] is True
+  assert csc["mobile_only"] is True
+  assert csc["data_type"] == "float"
+  assert csc["ui_type"] == "numeric"
+  assert (csc["min"], csc["max"], csc["step"]) == (0.0, 3.0, 0.1)
+  assert _declared_default("CurveSpeedControllerBrakeLead") == "1.2"
+
+
 def test_curve_speed_controller_readouts_are_display_only_and_nested():
   csc = _params_by_section(_layout())["Longitudinal (Speed & Following)"]
 

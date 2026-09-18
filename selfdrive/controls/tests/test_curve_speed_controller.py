@@ -3,6 +3,8 @@ import pytest
 
 from types import SimpleNamespace
 
+from cereal import custom
+
 from openpilot.common.realtime import DT_MDL
 from openpilot.starpilot.common.starpilot_variables import DEFAULT_LATERAL_ACCELERATION
 from openpilot.starpilot.common.starpilot_utilities import extract_curve_profile
@@ -18,9 +20,14 @@ from openpilot.starpilot.controls.lib.curve_speed_controller import (
   MAX_CURVATURE,
   PRIOR_CURVATURE_BP,
   PRIOR_LAT_ACCEL_V,
+  CSC_BRAKE_LEAD_MAX,
   CSC_NUDGE,
   CSC_NUDGE_WEIGHT,
   CSC_OVERRIDE_WATCH_TIME,
+  CSC_SETTLE_TIME,
+  CSC_SPEED_COMFORT_BP,
+  CSC_SPEED_COMFORT_SCALE,
+  CSC_SPEED_TIER_SPLIT,
   CSC_TARGET_UP_RATE,
   CSC_TRAINING_SETTLE_TIME,
   CurveSpeedController,
@@ -86,7 +93,9 @@ def envelope_speed(controller, curvature, distance):
     max(float(np.sqrt(controller.lat_accel_for_curvature(curvature) / curvature)), CSC_MIN_SPEED),
     float(np.sqrt(CSC_MAX_LATERAL_ACCEL / curvature)),
   )
-  return float(np.sqrt(curve_speed**2 + 2.0 * CSC_APPROACH_DECEL * distance))
+  settle_distance = curve_speed * CSC_SETTLE_TIME
+  effective_distance = max(0.0, distance - settle_distance)
+  return float(np.sqrt(curve_speed**2 + 2.0 * CSC_APPROACH_DECEL * effective_distance))
 
 
 def test_straight_road_target_is_cruise_speed():
@@ -545,3 +554,180 @@ def test_stale_param_from_a_previous_build_is_republished_without_training():
   controller.log_data(0.0, make_sm())
 
   assert planner.params.values["CalibratedLateralAcceleration"] <= CSC_LAT_ACCEL_MAX
+
+
+def make_map_out(*, map_curve=0.0, suggested=0.0, sl_suggested=0.0, way_sel=None):
+  if way_sel is None:
+    way_sel = custom.WaySelectionType.current
+
+  return SimpleNamespace(
+    mapCurveSpeed=map_curve,
+    suggestedSpeed=suggested,
+    speedLimitSuggestedSpeed=sl_suggested,
+    waySelectionType=way_sel,
+  )
+
+
+def converge_map(controller, planner, map_out, v_ego=30.0, v_cruise=30.0, frames=400):
+  planner.mapd_out = map_out
+  for _ in range(frames):
+    controller.update_target(v_ego, v_cruise)
+  return controller.target
+
+
+def test_map_curve_speed_slowdown_is_used_when_below_the_speed_limit_suggestion():
+  planner, controller = make_controller()
+
+  target = converge_map(controller, planner, make_map_out(suggested=20.0, sl_suggested=30.0))
+
+  assert target == pytest.approx(20.0, abs=0.2)
+
+
+def test_map_speed_limit_suggestion_is_not_treated_as_a_curve():
+  planner, controller = make_controller()
+
+  target = converge_map(controller, planner, make_map_out(suggested=30.0, sl_suggested=30.0), frames=200)
+
+  assert target == pytest.approx(30.0)
+
+
+def test_dedicated_map_curve_field_is_preferred_over_the_composite():
+  planner, controller = make_controller()
+
+  target = converge_map(controller, planner, make_map_out(map_curve=18.0, suggested=25.0, sl_suggested=30.0))
+
+  assert target == pytest.approx(18.0, abs=0.2)
+
+
+def test_map_fail_way_selection_is_ignored():
+  planner, controller = make_controller()
+
+  target = converge_map(
+    controller, planner, make_map_out(map_curve=10.0, way_sel=custom.WaySelectionType.fail), frames=200)
+
+  assert target == pytest.approx(30.0)
+
+
+def test_missing_mapd_is_ignored():
+  _, controller = make_controller()
+
+  for _ in range(200):
+    controller.update_target(30.0, 30.0)
+
+  assert controller.target == pytest.approx(30.0)
+
+
+def test_high_speed_sweepers_get_less_comfort_than_sharp_bends():
+  _, controller = make_controller()
+
+  sweeper = 0.001
+  assert controller.learned_lat_accel(sweeper) > controller.lat_accel_for_curvature(sweeper)
+
+  bend = 0.02
+  assert controller.lat_accel_for_curvature(bend) == pytest.approx(controller.learned_lat_accel(bend))
+
+
+def test_speed_comfort_scale_spans_the_breakpoints():
+  assert CSC_SPEED_COMFORT_BP == [20.0, 35.0]
+  assert CSC_SPEED_COMFORT_SCALE[0] == pytest.approx(1.0)
+  assert CSC_SPEED_COMFORT_SCALE[-1] == pytest.approx(0.88)
+
+
+def test_legacy_curvature_data_migrates_into_the_low_speed_tier():
+  _, controller = make_controller(curvature_data={"0.02": {"average": 2.0, "count": 10000}})
+
+  data = controller.curvature_data["0.02"]
+  assert data["average"] == pytest.approx(2.0)
+  assert data["count"] == 10000
+  assert data["average_low"] == pytest.approx(2.0)
+  assert data["count_low"] == 10000
+  assert data["average_high"] == pytest.approx(2.0)
+  assert data["count_high"] == 0
+
+
+def test_training_splits_into_speed_tiers_and_keeps_base_keys():
+  planner, controller = make_controller(driving_in_curve=True)
+  planner.road_curvature = 0.02
+  controller.training_timer = CSC_TRAINING_SETTLE_TIME
+
+  planner.lateral_acceleration = 1.3
+  controller.log_data(25.0, make_sm(long_active=False))
+  planner.lateral_acceleration = 2.6
+  controller.log_data(10.0, make_sm(long_active=False))
+
+  data = controller.curvature_data["0.02"]
+  assert data["count_high"] == 1
+  assert data["average_high"] == pytest.approx(1.3)
+  assert data["count_low"] == 1
+  assert data["average_low"] == pytest.approx(2.6)
+  assert data["count"] == 2
+  assert data["average"] == pytest.approx(1.95)
+
+
+def test_tier_split_keeps_highway_and_local_habits_apart():
+  planner, controller = make_controller(driving_in_curve=True)
+  planner.road_curvature = 0.003
+  controller.training_timer = CSC_TRAINING_SETTLE_TIME
+
+  planner.lateral_acceleration = 1.2
+  controller.log_data(25.0, make_sm(long_active=False))
+  planner.lateral_acceleration = 2.5
+  controller.log_data(10.0, make_sm(long_active=False))
+
+  idx = controller.required_curvatures.index(controller._bucket_curvature(0.003))
+  assert controller._curve_a_high[idx] < controller._curve_a_low[idx]
+
+
+def test_high_speed_sweeper_uses_the_high_speed_tier():
+  planner, controller = make_controller(driving_in_curve=True)
+  planner.road_curvature = 0.003
+  controller.training_timer = CSC_TRAINING_SETTLE_TIME
+
+  planner.lateral_acceleration = 1.2
+  controller.log_data(25.0, make_sm(long_active=False))
+  planner.lateral_acceleration = 2.5
+  controller.log_data(10.0, make_sm(long_active=False))
+
+  combined = float(np.interp(0.003, controller._curve_k, controller._curve_a))
+  assert np.sqrt(combined / 0.003) >= CSC_SPEED_TIER_SPLIT
+
+  high_lat = float(controller.lat_accel_for_curvature(0.003))
+  low_lat = float(np.interp(0.003, controller._curve_k, controller._curve_a_low))
+  assert high_lat < low_lat
+
+
+def test_longer_brake_lead_advances_the_slowdown():
+  planner, controller = make_controller(curve_profile=single_apex_profile(0.02, 150.0))
+  planner.csc_brake_lead = CSC_SETTLE_TIME
+  baseline = converge(controller, 30.0, 30.0)
+
+  planner_earlier, controller_earlier = make_controller(curve_profile=single_apex_profile(0.02, 150.0))
+  planner_earlier.csc_brake_lead = CSC_SETTLE_TIME + 1.0
+  earlier = converge(controller_earlier, 30.0, 30.0)
+
+  assert earlier < baseline
+
+
+def test_zero_brake_lead_brakes_up_to_the_apex():
+  planner, controller = make_controller(curve_profile=single_apex_profile(0.02, 0.0))
+  planner.csc_brake_lead = 0.0
+
+  target = converge(controller, 30.0, 30.0)
+  curve_speed = min(
+    max(float(np.sqrt(controller.lat_accel_for_curvature(0.02) / 0.02)), CSC_MIN_SPEED),
+    float(np.sqrt(CSC_MAX_LATERAL_ACCEL / 0.02)),
+  )
+
+  assert target == pytest.approx(curve_speed, abs=0.1)
+
+
+def test_brake_lead_is_clamped_to_supported_range():
+  planner, controller = make_controller(curve_profile=single_apex_profile(0.02, 150.0))
+  planner.csc_brake_lead = 99.0
+  over = converge(controller, 30.0, 30.0)
+
+  planner_capped, controller_capped = make_controller(curve_profile=single_apex_profile(0.02, 150.0))
+  planner_capped.csc_brake_lead = CSC_BRAKE_LEAD_MAX
+  capped = converge(controller_capped, 30.0, 30.0)
+
+  assert over == pytest.approx(capped, abs=0.05)

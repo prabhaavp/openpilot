@@ -911,6 +911,10 @@ class StarPilotVariables:
 
     toggle.curve_speed_controller = toggle.openpilot_longitudinal and self.get_value("CurveSpeedController")
     toggle.csc_no_lead = self.get_value("CurveSpeedControllerNoLead", condition=toggle.curve_speed_controller)
+    toggle.csc_brake_lead = self.get_value(
+      "CurveSpeedControllerBrakeLead", cast=float, condition=toggle.curve_speed_controller,
+      default=1.2, min=0.0, max=3.0,
+    )
     toggle.csc_status = self.get_value("ShowCSCStatus", condition=toggle.curve_speed_controller) or toggle.debug_mode
 
     toggle.goat_scream_alert = self.get_value("GoatScream")

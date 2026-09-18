@@ -1167,6 +1167,23 @@
         "settings_tier": "simple"
       },
       {
+        "key": "CurveSpeedControllerBrakeLead",
+        "label": "Curve Braking Lead",
+        "description": "How early to finish slowing before a curve. Higher values start braking sooner and let the car coast through the apex; 0 disables the lead and brakes up to the curve.",
+        "picker_description": "How early to start braking before a curve.",
+        "data_type": "float",
+        "ui_type": "numeric",
+        "min": 0.0,
+        "max": 3.0,
+        "step": 0.1,
+        "precision": 1,
+        "unit": " s",
+        "galaxy_only": true,
+        "mobile_only": true,
+        "parent_key": "CurveSpeedController",
+        "settings_tier": "advanced"
+      },
+      {
         "key": "CalibratedLateralAcceleration",
         "label": "Calibrated Lateral Accel",
         "description": "The learned lateral acceleration from collected driving data. Higher values allow faster cornering.",
