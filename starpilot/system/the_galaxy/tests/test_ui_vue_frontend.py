@@ -865,11 +865,13 @@ def test_ui_navigation_map_first_layout_regressions():
   destination = _read("js/components/NavigationDestinationPanel.js")
 
   # Destination tab is a map-first screen: the map fills the content area and
-  # the tab switcher floats above the bottom nav instead of stacking chrome.
+  # runs behind the top appbar and the tab switcher floats above the bottom nav.
   assert 'class="gx-navigation-view"' in nav and "gx-navigation-tabs" in nav
   assert ".gx-content:has(.gx-navigation-view)" in css
   assert "--bottomnav-clearance:" in css
-  assert "height: calc(100dvh - var(--appbar-height) - env(safe-area-inset-top, 0px)" in css
+  assert "margin-top: calc(-1 * (var(--appbar-height) + env(safe-area-inset-top, 0px) + var(--sp-1)))" in css
+  assert "height: 100dvh" in css
+  assert "padding-top: calc(var(--appbar-height) + env(safe-area-inset-top, 0px) + var(--sp-4))" in css
   assert ".gx-navigation-tabs {" in css
   assert "bottom: var(--bottomnav-clearance)" in css
   assert "padding-bottom: calc(var(--bottomnav-clearance) + 56px)" in css

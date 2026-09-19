@@ -1389,6 +1389,7 @@ button.gx-chip:hover {
 }
 
 .gx-content:has(.gx-navigation-view) {
+  margin-top: calc(-1 * (var(--appbar-height) + env(safe-area-inset-top, 0px) + var(--sp-1)));
   padding: 0;
 }
 
@@ -1400,7 +1401,7 @@ button.gx-chip:hover {
 
 .gx-navigation-stage {
   background: var(--surface-container-low);
-  height: calc(100dvh - var(--appbar-height) - env(safe-area-inset-top, 0px) - var(--sp-1));
+  height: 100dvh;
   min-height: 0;
   overflow: hidden;
   position: relative;
@@ -1437,6 +1438,7 @@ button.gx-chip:hover {
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: var(--sp-4);
+  padding-top: calc(var(--appbar-height) + env(safe-area-inset-top, 0px) + var(--sp-4));
   pointer-events: none;
   position: absolute;
   z-index: 2;
@@ -1450,7 +1452,7 @@ button.gx-chip:hover {
   pointer-events: none;
   position: absolute;
   right: var(--sp-4);
-  top: var(--sp-4);
+  top: calc(var(--appbar-height) + env(safe-area-inset-top, 0px) + var(--sp-4));
   z-index: 3;
 }
 
@@ -1702,12 +1704,10 @@ button.gx-chip:hover {
 @media (max-width: 767px) {
   .gx-navigation-overlay {
     padding: var(--sp-3);
+    padding-top: calc(var(--appbar-height) + env(safe-area-inset-top, 0px) + var(--sp-3));
     padding-bottom: calc(var(--bottomnav-clearance) + 56px);
   }
 
-  /* Keep the tab switcher floating just above the bottom nav instead of
-     anchoring it to the old appbar height, which was hidden behind the nav
-     on phones with a top safe-area inset. */
   .gx-navigation-tabs {
     bottom: var(--bottomnav-clearance);
     display: flex;
